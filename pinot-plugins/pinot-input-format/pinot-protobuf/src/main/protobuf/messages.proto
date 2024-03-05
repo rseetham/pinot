@@ -1,0 +1,307 @@
+syntax = "proto3";
+
+package common.models.generated;
+
+option java_multiple_files = true;
+
+message Payload {
+  repeated string strings = 1;
+  repeated double doubles = 2;
+  repeated int32 ints = 3;
+  repeated int64 longs = 4;
+  repeated bytes bytes = 5;
+  repeated float floats = 6;
+  repeated string deleted_strings = 7;
+}
+
+message TermValues {
+  repeated string values = 1;
+}
+
+message MFVector {
+  int64 version = 1 [deprecated = true]; // use version_str instead
+  repeated double vector = 2;
+  string version_str = 3;
+}
+
+message UserFeatures {
+  repeated MFVector vectors = 1;
+  repeated MFVector vectors_dish = 2;
+  repeated MFVector vectors_tte = 3;
+  bool is_new_user = 4;
+}
+
+message QueryEmbedding {
+  repeated double embedding = 1;
+  string version = 2;
+}
+
+message XpConfig {
+  map<string, string> args = 1; // key is xp argument name, value is xp argument value.
+}
+
+enum DistanceScoreType {
+  DISTANCE_SCORE_TYPE_INVALID = 0;
+  DISTANCE_SCORE_TYPE_LINEAR = 1;
+  DISTANCE_SCORE_TYPE_EXPONENTIAL = 2;
+}
+
+message DistanceScoreConfig {
+  DistanceScoreType distance_score_type = 1;
+  double weight = 2;
+}
+
+enum Environment {
+  ENVIRONMENT_INVALID = 0;
+  ENVIRONMENT_PRODUCTION = 1;
+  ENVIRONMENT_STAGING = 2;
+  ENVIRONMENT_GATING = 3;
+}
+
+/**
+ * This is used for annotating the signature match behaviors, i.e. how the field
+ * values should be compared during signature match process. There are 4 behaviors
+ * of field value comparison:
+ *
+ * <li>SignatureMatch.ignore: do not need to compare the field values.
+ * <li>SignatureMatch.equal: the field values in query and signature should be
+ * exactly the same.
+ * <li>SignatureMatch.include: for repeated field only. The value in signature
+ * should be a subset of that in query.
+ * <li>SignatureMatch.exclude: for repeated field only. The value in signature
+ * should not exist in that in query.
+ *
+ * <p>For example, the following eats term search request signature will match
+ * any eats term search requests which contain "query", "is_orderable", and
+ * "region_id" fields, and field value of "is_orderable" field equals to true.
+ * <pre>{@code
+ * {
+ *    "query":"s",
+ *    "custom_data":{
+ *       "@type":"type.googleapis.com/uber.sia.grpcservice.protos.eats.EatsTermSearchCustomData",
+ *       "filters":{
+ *          "is_orderable": true,
+ *          "region_id":1
+ *       }
+ *     },
+ *     "signature_match": {
+ *       "equal": ["custom_data/filters/is_orderable"]
+ *     }
+ * }
+ * }</pre>
+ */
+message SignatureMatch {
+  repeated string ignore = 1;
+  repeated string equal = 2;
+  repeated string include = 3;
+  repeated string exclude = 4;
+}
+
+message ErrorMessage {
+  string message = 1;
+  string stack_trace = 2;
+  string details = 3;
+}
+
+message UpdateMessage {
+  string uuid = 1;
+  TermUpdateMessage term_updates = 2;
+  repeated StoredFieldUpdateMessage stored_field_updates = 3;
+  repeated DocValuesUpdateMessage doc_values_updates = 4;
+  bytes bytes_uuid = 5;  // uuid in binary byte array format
+
+  // Full AnalyzedDocument for updates that are not stored in sia-store.
+  // e.g. fulfillment index location updates use case. In these use cases, diffs
+  // will be computed on the search leaf. If this is provided, all updates
+  // fields are ignored.
+  AnalyzedDocument analyzed_doc = 6;
+  //Timestamp at which the message is created. This is used to emit metrics for the sia stream publish
+  //and live index update latency
+  int64 createdAt = 7;
+  // Timestamp in milliseconds at which the corresponding change event object
+  // was created in upstream services before submitting to kafka topics.
+  // This is used to emit metrics for the end to end ingestion time.
+  // Note: This is not the timestamp when the update actually happened.
+  int64 changeEventTime = 8;
+  // Flag denoting if the corresponding analyzed document is a new document.
+  bool isNewDocument = 9;
+  // Indicates fields that have to be cached on the live index. These caching
+  // hints will only be applied to values that have changed and are present in
+  // the AnalyzedDocumentDiff.
+  repeated CachingHint caching_hints = 10;
+  // New vector fields (key is field name, value is the vector value) for update. the old vector fields are not needed because the whole old vector value needs to be marked deleted and the whole new vector value needed to be inserted.
+  map<string, VectorField> vectorFields = 11;
+}
+
+message DocValuesUpdateMessage {
+  string field = 1;
+  DocValues value = 2;
+  bool is_deleted = 3;
+}
+
+message StoredFieldUpdateMessage {
+  string field = 1;
+  Payload value = 2;
+}
+
+/**
+TermUpdateMessage communicates a change to terms in the live index.
+
+If positions are indexed, each term must have the corresponding and complete
+positions update. `positions_per_term` must be synced with the terms. See
+explanation above AnalyzedField for more details.
+*/
+message TermUpdateMessage {
+  string field = 1;
+  Payload terms = 2;
+  bool range_scan_enabled = 3;
+  bool is_deleted = 4;
+  // Positions per term and type. Must match length in `terms`.
+  repeated Positions strings_positions_per_term = 5;
+  repeated Positions doubles_positions_per_term = 6;
+  repeated Positions ints_positions_per_term = 7;
+  repeated Positions longs_positions_per_term = 8;
+  repeated Positions bytes_positions_per_term = 9;
+  repeated Positions floats_positions_per_term = 10;
+  bool range_postings_list_enabled = 11;
+}
+
+/**
+AnalyzedField represents a field with a document which has passed through
+analysis.
+
+terms are represented by a single object with repeated values as follows.
+
+message Payload {
+  repeated string strings = 1;
+  repeated double doubles = 2;
+  repeated int32 ints = 3;
+  repeated int64 longs = 4;
+  repeated bytes bytes = 5;
+  repeated float floats = 6;
+}
+
+This is the most compact way of storing terms. For example using a structure
+like this is 16% - 22% bigger on the wire (measured by java protobuf
+`getSerializedSize()`)
+
+Term {
+  oneof value {
+    repeated string strings = 1;
+    repeated double doubles = 2;
+    repeated int32 ints = 3;
+    repeated int64 longs = 4;
+    repeated bytes bytes = 5;
+    repeated float floats = 6;
+  }
+}
+
+`positions_per_term` must be kept in-sync with `terms` for each corresponding
+type. For example:
+terms.strings[0] -> strings_positions_per_term[0],
+terms.strings[1] -> strings_positions_per_term[1],
+terms.doubles[0] -> doubles_positions_per_term[0] and so on.
+
+This is a little awkward, but it saves a lot of space.
+
+
+More context: https://docs.google.com/document/d/1B-EGzPaNcPlAdtpQ6jaiO1QThwhZNujsmqD9etMF4q0/edit#
+*/
+message AnalyzedField {
+  Payload terms = 1;
+  bool range_scan_enabled = 2;
+
+  // Positions per term and type. Must match length in `terms`.
+  repeated Positions strings_positions_per_term = 3;
+  repeated Positions doubles_positions_per_term = 4;
+  repeated Positions ints_positions_per_term = 5;
+  repeated Positions longs_positions_per_term = 6;
+  repeated Positions bytes_positions_per_term = 7;
+  repeated Positions floats_positions_per_term = 8;
+}
+
+// positions and offsets per term.
+message Positions {
+  repeated int32 positions = 1;
+  repeated Offset offset = 2;
+}
+
+message Offset{
+  int32 start_offset = 1;
+  int32 end_offset = 2;
+}
+
+// the input embedding vectors
+message VectorField {
+  repeated float vectors = 1;
+}
+
+message AnalyzedDocument {
+  map<string, AnalyzedField> fields = 1;
+  map<string, Payload> stored_fields = 2;
+  map<string, DocValues> doc_values = 3;
+  string uuid = 4;
+  repeated int32 shard_ids = 5;
+  double static_rank = 6;
+  bool is_deleted = 7;
+  // the time in milliseconds when the raw document is retrieved
+  int64 retrieved_at = 8;
+  bytes bytes_uuid = 9; // uuid in binary byte array format
+  double parent_static_rank = 10; // to cluster parent with children in base index
+  string parent_uuid = 11; // to cluster parent with children in base index
+  bool is_parent = 12;
+  map<string, VectorField> vector_fields = 13; // vectors field to support potential multi input embedding vectors
+  // this is optional. Most users use retrieved_at timestamp for ordering
+  // but some use cases may need to use a use-case specific version_id to do this
+  int64 version_id = 14;
+  // sortable_bytes is optional. Sortable bytes is used to sort documents in base index. Users can customize concatenated sorting bytes of multiple fields to one sortable bytes field. IntraShardComparator uses sortable_bytes to sort documents in base index when building base index.
+  bytes sortable_bytes = 15;
+  // List of caching hints indicating fields that have to be cached in the live
+  // index. This is optional. Caching hints will be ignored if the corresponding
+  // field does not exist in the document.
+  // These caching hints will only be applied to values that have changed and are
+  // present in the AnalyzedDocumentDiff.
+  repeated CachingHint caching_hints = 16;
+  // time in milliseconds when the analyzed document data expires
+  int64 expires_at_ms = 17;
+  repeated BucketShard bucket_shards = 18; // used for doc with bucket sharding
+}
+
+message BucketShard {
+  int32 shard_id = 1;
+  repeated string buckets = 2;
+}
+
+enum DocValuesType {
+  NUMERIC = 0;
+  BINARY = 1;
+  SORTED = 2;
+  SORTED_NUMERIC = 3;
+  SORTED_SET = 4;
+}
+
+message DocValues {
+  Payload payload = 1;
+  DocValuesType doc_values_type = 2;
+}
+
+// Hints the live index updater that the defined field needs to be cached in the
+// live index. Only stored field is currently supported but can be extended to
+// add docValues. This will be applied when the live index is being updated
+// while processing a diff.
+message CachingHint {
+  // An identifier for the data type that will be retrieved from the field.
+  // For example, type_id can hold the following values - string, double, proto
+  // descriptor names or any user provided string. This user-provided string
+  // will be passed back to the configured field-deserializer registry to help
+  // map the field to a deserializer.
+  string type_id = 1;
+
+  // Field name of the storedField that needs to be cached.
+  // The fieldName defined here will be used to extract the respective value
+  // (in bytes) and passed to the client for deserialization.
+  // This can be extended to support docValues in the future.
+  oneof field_name {
+    string stored_field_name = 2;
+  }
+}
