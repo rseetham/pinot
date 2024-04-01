@@ -21,9 +21,14 @@ package org.apache.pinot.plugin.inputformat.protobuf;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.common.io.BaseEncoding;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -73,6 +78,48 @@ public class ProtoBufMessageDecoderTest {
     assertEquals(destination.getValue("email"), "foobar@hello.com");
     assertEquals(destination.getValue("name"), "Alice");
     assertEquals(destination.getValue("id"), 18);
+  }
+
+  @Test
+  public void testHappyCaseSia()
+      throws Exception {
+    Map<String, String> decoderProps = new HashMap<>();
+    URL descriptorFile = getClass().getClassLoader().getResource("siastream.desc");
+    decoderProps.put("descriptorFile", descriptorFile.toURI().toString());
+    decoderProps.put("protoClassName", "UpdateMessage");
+    ProtoBufMessageDecoder messageDecoder = new ProtoBufMessageDecoder();
+    Set<String> fieldsToRead = Set.of("uuid", "term_updates", "stored_field_updates", "doc_values_updates", "bytes_uuid", "createdAt");
+    List<byte[]> byteLines = decodeBase64LinesFromFile("/Users/rekhas/Projects/stuff/protobuf/100siastreammsgs");
+
+    messageDecoder.init(decoderProps, fieldsToRead, "");
+    GenericRow destination = new GenericRow();
+    Long start = System.currentTimeMillis();
+    //Long totalTime = 0L;
+    int num = 0;
+    for (int i = 0; i < 100000; i++) {
+      for (byte[] msg : byteLines) {
+        //start = System.currentTimeMillis();
+        messageDecoder.decode(msg, destination);
+        //totalTime = totalTime + System.currentTimeMillis() - start;
+        num = num + 1;
+      }
+    }
+    System.out.println(num);
+    System.out.println(System.currentTimeMillis() - start);
+
+  }
+
+  public static List<byte[]> decodeBase64LinesFromFile(String filePath) throws IOException {
+    Path path = Paths.get(filePath);
+    List<String> lines = Files.readAllLines(path);
+
+    List<byte[]> decodedLines = new ArrayList<>();
+    for (String line : lines) {
+      byte[] decodedBytes = BaseEncoding.base64().decode(line);
+      decodedLines.add(decodedBytes);
+    }
+
+    return decodedLines;
   }
 
   private ImmutableSet<String> getFieldsInSampleRecord() {
