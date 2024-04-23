@@ -161,6 +161,7 @@ public class MessageCodeGen {
         case FIXED64:
         case FIXED32:
         case UINT32:
+        case SFIXED32:
         case SFIXED64:
         case SINT32:
         case SINT64:
