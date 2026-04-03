@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Project-level Maven settings that bypass Uber's internal Artifactory mirror.
+  Use this when building apache/pinot against the public internet repos.
+
+  IntelliJ: Settings -> Build, Execution, Deployment -> Build Tools -> Maven
+    -> User settings file: <path-to-project>/.mvn/settings.xml
+
+  CLI: ./mvnw -s .mvn/settings.xml <goals>
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.1.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.1.0 http://maven.apache.org/xsd/settings-1.1.0.xsd">
+  <!-- No mirrors: use Maven Central and repos declared in the POM directly -->
+</settings>
