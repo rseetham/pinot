@@ -23,11 +23,15 @@ import com.google.common.collect.Sets;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import org.apache.pinot.spi.data.readers.GenericRow;
 import org.testng.Assert;
+import org.testng.annotations.AfterMethod;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -39,6 +43,11 @@ import static org.testng.Assert.assertNotNull;
 
 
 public class ProtoBufCodeGenMessageDecoderTest {
+
+  @AfterMethod
+  public void clearCache() {
+    ProtoBufCodeGenMessageDecoder.clearCacheForTest();
+  }
   @Test
   public void testComplexClass()
       throws Exception {
@@ -345,6 +354,113 @@ public class ProtoBufCodeGenMessageDecoderTest {
         REPEATED_STRINGS, NESTED_MESSAGE, REPEATED_NESTED_MESSAGES, COMPLEX_MAP, SIMPLE_MAP, ENUM_FIELD,
         NULLABLE_STRING_FIELD, NULLABLE_INT_FIELD, NULLABLE_LONG_FIELD, NULLABLE_DOUBLE_FIELD, NULLABLE_FLOAT_FIELD,
         NULLABLE_BOOL_FIELD, NULLABLE_BYTES_FIELD);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cache tests
+  // ---------------------------------------------------------------------------
+
+  @Test
+  public void testCacheHitDecodesCorrectly()
+      throws Exception {
+    // First init — cold path, compiles the method.
+    setupDecoder("sample.jar",
+        "org.apache.pinot.plugin.inputformat.protobuf.Sample$SampleRecord", getFieldsInSampleRecord());
+
+    // Second init with identical config — fast path (cache hit). Must decode correctly.
+    ProtoBufCodeGenMessageDecoder second = setupDecoder("sample.jar",
+        "org.apache.pinot.plugin.inputformat.protobuf.Sample$SampleRecord", getFieldsInSampleRecord());
+
+    Sample.SampleRecord record = getSampleRecordMessage();
+    GenericRow row = new GenericRow();
+    second.decode(record.toByteArray(), row);
+    assertEquals(row.getValue("email"), "foobar@hello.com");
+    assertEquals(row.getValue("name"), "Alice");
+    assertEquals(row.getValue("id"), 18);
+  }
+
+  @Test
+  public void testFieldOrderDoesNotAffectCacheHit()
+      throws Exception {
+    // Two decoders with the same fields in different insertion order must hit the same cache entry
+    // and both decode all three fields correctly.
+    Set<String> fieldsABC = new LinkedHashSet<>(Arrays.asList("email", "name", "id"));
+    Set<String> fieldsCBA = new LinkedHashSet<>(Arrays.asList("id", "email", "name"));
+    String protoClass = "org.apache.pinot.plugin.inputformat.protobuf.Sample$SampleRecord";
+
+    ProtoBufCodeGenMessageDecoder decoderA = setupDecoder("sample.jar", protoClass, fieldsABC);
+    ProtoBufCodeGenMessageDecoder decoderB = setupDecoder("sample.jar", protoClass, fieldsCBA);
+
+    Sample.SampleRecord record = getSampleRecordMessage();
+    GenericRow rowA = new GenericRow();
+    GenericRow rowB = new GenericRow();
+    decoderA.decode(record.toByteArray(), rowA);
+    decoderB.decode(record.toByteArray(), rowB);
+
+    assertEquals(rowA.getValue("email"), rowB.getValue("email"));
+    assertEquals(rowA.getValue("name"), rowB.getValue("name"));
+    assertEquals(rowA.getValue("id"), rowB.getValue("id"));
+  }
+
+  @Test
+  public void testDifferentFieldSetsDecodeDifferentColumns()
+      throws Exception {
+    // A decoder initialized with only {name, id} must not populate email.
+    // A decoder initialized with {name, id, email} must populate all three.
+    // Each gets its own cache entry and decodes exactly what it declared.
+    String protoClass = "org.apache.pinot.plugin.inputformat.protobuf.Sample$SampleRecord";
+
+    ProtoBufCodeGenMessageDecoder partial = setupDecoder("sample.jar", protoClass,
+        new HashSet<>(Arrays.asList("name", "id")));
+    ProtoBufCodeGenMessageDecoder full = setupDecoder("sample.jar", protoClass, getFieldsInSampleRecord());
+
+    Sample.SampleRecord record = getSampleRecordMessage();
+
+    GenericRow partialRow = new GenericRow();
+    partial.decode(record.toByteArray(), partialRow);
+    assertNotNull(partialRow.getValue("name"));
+    assertNotNull(partialRow.getValue("id"));
+    Assert.assertNull(partialRow.getValue("email"),
+        "Decoder initialized without email must not populate it");
+
+    GenericRow fullRow = new GenericRow();
+    full.decode(record.toByteArray(), fullRow);
+    assertEquals(fullRow.getValue("email"), "foobar@hello.com");
+    assertEquals(fullRow.getValue("name"), "Alice");
+    assertEquals(fullRow.getValue("id"), 18);
+  }
+
+  @Test
+  public void testCacheHitAfterFieldsUpdateDecodesNewFields()
+      throws Exception {
+    // Simulates a fieldsToRead update: a table first reads {name, id}, then is reconfigured to
+    // also read {email}. The second decoder must decode email from its own cache entry.
+    String protoClass = "org.apache.pinot.plugin.inputformat.protobuf.Sample$SampleRecord";
+
+    // First decoder — subset of fields, populates the cache for that key.
+    ProtoBufCodeGenMessageDecoder before = setupDecoder("sample.jar", protoClass,
+        new HashSet<>(Arrays.asList("name", "id")));
+
+    // Second decoder — expanded fields, different cache key, must compile and cache independently.
+    ProtoBufCodeGenMessageDecoder after = setupDecoder("sample.jar", protoClass, getFieldsInSampleRecord());
+
+    // Third decoder with the same expanded fields — must hit the cache for the expanded key.
+    ProtoBufCodeGenMessageDecoder afterCached = setupDecoder("sample.jar", protoClass, getFieldsInSampleRecord());
+
+    Sample.SampleRecord record = getSampleRecordMessage();
+    GenericRow row = new GenericRow();
+    afterCached.decode(record.toByteArray(), row);
+
+    assertEquals(row.getValue("email"), "foobar@hello.com",
+        "Decoder from cache hit on expanded field set must decode email");
+    assertEquals(row.getValue("name"), "Alice");
+    assertEquals(row.getValue("id"), 18);
+
+    // The original narrow decoder still works correctly from its own cache entry.
+    GenericRow beforeRow = new GenericRow();
+    before.decode(record.toByteArray(), beforeRow);
+    Assert.assertNull(beforeRow.getValue("email"),
+        "Original narrow decoder must not decode email after the expanded decoder was cached");
   }
 
   private ProtoBufCodeGenMessageDecoder setupDecoder(String name, String value,
