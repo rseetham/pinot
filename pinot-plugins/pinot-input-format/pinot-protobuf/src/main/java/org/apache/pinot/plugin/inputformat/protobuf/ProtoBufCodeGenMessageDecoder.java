@@ -82,9 +82,27 @@ public class ProtoBufCodeGenMessageDecoder implements StreamMessageDecoder<byte[
 
   private static final int DEFAULT_CACHE_REFRESH_INTERVAL_MINUTES = 60;
 
-  // Last-known-good compiled Method per cache key. Written by the background refresh thread and
+  /**
+   * Holds the original inputs alongside the compiled {@link Method} so that the background refresh
+   * task can re-run the build pipeline without parsing the cache key string.
+   */
+  static final class CacheEntry {
+    final String _jarPath;
+    final String _protoClassName;
+    final Set<String> _fieldsToRead;
+    final Method _method;
+
+    CacheEntry(String jarPath, String protoClassName, Set<String> fieldsToRead, Method method) {
+      _jarPath = jarPath;
+      _protoClassName = protoClassName;
+      _fieldsToRead = fieldsToRead;
+      _method = method;
+    }
+  }
+
+  // Last-known-good CacheEntry per cache key. Written by the background refresh thread and
   // by init() on first population. Read by all subsequent init() calls without blocking.
-  private static final ConcurrentHashMap<String, Method> METHOD_CACHE = new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<String, CacheEntry> METHOD_CACHE = new ConcurrentHashMap<>();
 
   // Tracks the scheduled refresh future per key so each key is refreshed at most once.
   private static final ConcurrentHashMap<String, ScheduledFuture<?>> REFRESH_TASKS = new ConcurrentHashMap<>();
@@ -111,16 +129,16 @@ public class ProtoBufCodeGenMessageDecoder implements StreamMessageDecoder<byte[
     String cacheKey = buildCacheKey(jarPath, protoClassName, fieldsToRead);
 
     // Fast path: return the cached Method immediately without any I/O or compilation.
-    Method cached = METHOD_CACHE.get(cacheKey);
+    CacheEntry cached = METHOD_CACHE.get(cacheKey);
     if (cached != null) {
-      _decodeMethod = cached;
+      _decodeMethod = cached._method;
       scheduleRefreshIfAbsent(cacheKey, refreshIntervalMinutes);
       return;
     }
 
     // Cold path: first init for this key — build synchronously.
     Method method = buildDecodeMethod(jarPath, protoClassName, fieldsToRead);
-    METHOD_CACHE.put(cacheKey, method);
+    METHOD_CACHE.put(cacheKey, new CacheEntry(jarPath, protoClassName, fieldsToRead, method));
     _decodeMethod = method;
     scheduleRefreshIfAbsent(cacheKey, refreshIntervalMinutes);
   }
@@ -174,14 +192,14 @@ public class ProtoBufCodeGenMessageDecoder implements StreamMessageDecoder<byte[
    * On failure the existing cached value is left unchanged and a warning is logged.
    */
   private static void refreshKey(String cacheKey) {
+    CacheEntry existing = METHOD_CACHE.get(cacheKey);
+    if (existing == null) {
+      return;
+    }
     try {
-      String[] parts = cacheKey.split("\\|", 3);
-      String jarPath = parts[0];
-      String protoClassName = parts[1];
-      // Reconstruct fieldsToRead from the sorted comma-separated list stored in the key.
-      Set<String> fieldsToRead = new TreeSet<>(Arrays.asList(parts[2].split(",")));
-      Method fresh = buildDecodeMethod(jarPath, protoClassName, fieldsToRead);
-      Method old = METHOD_CACHE.put(cacheKey, fresh);
+      Method fresh = buildDecodeMethod(existing._jarPath, existing._protoClassName, existing._fieldsToRead);
+      CacheEntry old = METHOD_CACHE.put(cacheKey,
+          new CacheEntry(existing._jarPath, existing._protoClassName, existing._fieldsToRead, fresh));
       closeClassLoader(old);
     } catch (Exception e) {
       LOGGER.warn("Background refresh of protobuf codegen cache failed for key: {}. "
@@ -206,12 +224,12 @@ public class ProtoBufCodeGenMessageDecoder implements StreamMessageDecoder<byte[
     return _refreshScheduler;
   }
 
-  /** Closes the {@link URLClassLoader} backing {@code method}, if any, ignoring errors. */
-  private static void closeClassLoader(Method method) {
-    if (method == null) {
+  /** Closes the {@link URLClassLoader} backing {@code entry}'s method, if any, ignoring errors. */
+  private static void closeClassLoader(CacheEntry entry) {
+    if (entry == null) {
       return;
     }
-    ClassLoader cl = method.getDeclaringClass().getClassLoader();
+    ClassLoader cl = entry._method.getDeclaringClass().getClassLoader();
     if (cl instanceof URLClassLoader) {
       try {
         ((URLClassLoader) cl).close();
