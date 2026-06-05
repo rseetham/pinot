@@ -2822,6 +2822,71 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     return pauseState != null && pauseState.getIndexOfInactiveTopics().contains(topicIndex);
   }
 
+  /**
+   * Prepares the last stream topic (identified by {@code topicIndex}) for removal from the table config by:
+   * <ol>
+   *   <li>Validating that force commit is allowed for this table.</li>
+   *   <li>Pausing consumption of the topic via {@code indexOfInactiveTopics} in the IdealState pause state.</li>
+   *   <li>Sending force commit messages for all consuming segments of the topic and waiting until committed. Repeats
+   *       until no consuming segments remain for the topic, to handle segments that start between the IS write and the
+   *       first segment scan.</li>
+   * </ol>
+   * If the force-commit wait fails, the topic index is removed from {@code indexOfInactiveTopics} as a compensating
+   * rollback so the table does not get stuck in a partially-paused state.
+   *
+   * <p>The caller is responsible for deleting the returned segments and then updating the table config.
+   *
+   * @param tableNameWithType realtime table name with type suffix
+   * @param topicIndex        index of the topic being removed (must be the last entry in streamConfigMaps)
+   * @param batchConfig       batch config for force commit polling
+   * @return set of segment names for the removed topic that were committed by this call
+   */
+  public Set<String> prepareLastTopicForRemoval(String tableNameWithType, int topicIndex, BatchConfig batchConfig)
+      throws InterruptedException {
+    validateForceCommitAllowed(tableNameWithType);
+
+    List<Integer> topicIndexList = List.of(topicIndex);
+    HelixHelper.updateIdealState(_helixManager, tableNameWithType, idealState -> {
+      PauseState pauseState = extractTablePauseState(idealState);
+      if (pauseState == null) {
+        pauseState = new PauseState(false, PauseState.ReasonCode.ADMINISTRATIVE, null,
+            new Timestamp(System.currentTimeMillis()).toString(), new ArrayList<>(topicIndexList));
+      } else {
+        pauseState.setIndexOfInactiveTopics(
+            Stream.concat(pauseState.getIndexOfInactiveTopics().stream(), topicIndexList.stream())
+                .distinct()
+                .collect(Collectors.toList()));
+      }
+      ZNRecord znRecord = idealState.getRecord();
+      znRecord.setSimpleField(PAUSE_STATE, pauseState.toJsonString());
+      LOGGER.info("Pausing topic index {} in table {} to prepare for removal.", topicIndex, tableNameWithType);
+      return new IdealState(znRecord);
+    }, RetryPolicies.noDelayRetryPolicy(3));
+
+    // Force-commit all consuming segments of the topic. Re-read the IS after each wait round to catch segments that
+    // started between the pause write and the previous scan (race with the segment-completion handler).
+    Set<String> allCommittedSegments = new TreeSet<>();
+    try {
+      Set<String> consumingSegments =
+          findConsumingSegmentsOfTopics(getIdealState(tableNameWithType), topicIndexList);
+      while (!consumingSegments.isEmpty()) {
+        sendForceCommitMessageToServers(tableNameWithType, consumingSegments);
+        waitUntilSegmentsForceCommitted(tableNameWithType, consumingSegments, batchConfig);
+        allCommittedSegments.addAll(consumingSegments);
+        // Re-read IS to check if any new consuming segments appeared for this topic during the wait.
+        consumingSegments = findConsumingSegmentsOfTopics(getIdealState(tableNameWithType), topicIndexList);
+        consumingSegments.removeAll(allCommittedSegments);
+      }
+    } catch (Exception e) {
+      // Compensating rollback: remove the topic from indexOfInactiveTopics so the table is not left partially paused.
+      LOGGER.error("Force-commit failed for topic index {} in table {}. Rolling back pause state.", topicIndex,
+          tableNameWithType, e);
+      resumeTopicsConsumption(tableNameWithType, topicIndexList);
+      throw e;
+    }
+    return allCommittedSegments;
+  }
+
   public PauseState resumeTopicsConsumption(String tableNameWithType, List<Integer> indexOfPausedTopics) {
     IdealState updatedIdealState = HelixHelper.updateIdealState(_helixManager, tableNameWithType, idealState -> {
       PauseState pauseState = extractTablePauseState(idealState);

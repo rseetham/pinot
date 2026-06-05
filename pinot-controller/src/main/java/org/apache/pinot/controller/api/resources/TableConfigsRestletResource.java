@@ -29,6 +29,7 @@ import io.swagger.annotations.Authorization;
 import io.swagger.annotations.SecurityDefinition;
 import io.swagger.annotations.SwaggerDefinition;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +55,7 @@ import org.apache.pinot.common.exception.TableConfigBackwardIncompatibleExceptio
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.metrics.ControllerMeter;
 import org.apache.pinot.common.metrics.ControllerMetrics;
+import org.apache.pinot.common.restlet.resources.BatchConfig;
 import org.apache.pinot.common.utils.DatabaseUtils;
 import org.apache.pinot.common.utils.LogicalTableConfigUtils;
 import org.apache.pinot.controller.ControllerConf;
@@ -68,6 +70,7 @@ import org.apache.pinot.controller.api.exception.TableAlreadyExistsException;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.minion.PinotHelixTaskResourceManager;
 import org.apache.pinot.controller.helix.core.minion.PinotTaskManager;
+import org.apache.pinot.controller.helix.core.realtime.PinotLLCRealtimeSegmentManager;
 import org.apache.pinot.controller.tuner.TableConfigTunerUtils;
 import org.apache.pinot.controller.util.TaskConfigUtils;
 import org.apache.pinot.core.auth.Actions;
@@ -79,6 +82,7 @@ import org.apache.pinot.segment.local.utils.TableConfigUtils;
 import org.apache.pinot.spi.config.TableConfigs;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableConfigValidatorRegistry;
+import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
 import org.apache.pinot.spi.data.LogicalTableConfig;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.utils.JsonUtils;
@@ -111,6 +115,9 @@ public class TableConfigsRestletResource {
 
   @Inject
   PinotHelixResourceManager _pinotHelixResourceManager;
+
+  @Inject
+  PinotLLCRealtimeSegmentManager _pinotLLCRealtimeSegmentManager;
 
   @Inject
   PinotHelixTaskResourceManager _pinotHelixTaskResourceManager;
@@ -418,6 +425,7 @@ public class TableConfigsRestletResource {
       if (realtimeTableConfig != null) {
         applyTuning(realtimeTableConfig, schema);
         if (_pinotHelixResourceManager.hasRealtimeTable(tableName)) {
+          handleStreamTopicDeletion(tableName, realtimeTableConfig);
           _pinotHelixResourceManager.updateTableConfig(realtimeTableConfig, forceTableSchemaUpdate);
           LOGGER.info("Updated realtime table config: {}", tableName);
         } else {
@@ -442,6 +450,100 @@ public class TableConfigsRestletResource {
 
     return new ConfigSuccessResponse("TableConfigs updated for " + tableName,
         tableConfigsAndUnrecognizedProps.getRight());
+  }
+
+  /**
+   * Validates and handles stream topic deletions when a realtime table config is updated.
+   *
+   * <p>Rules:
+   * <ul>
+   *   <li>Removing a topic from the middle of streamConfigMaps is rejected with BAD_REQUEST, because Pinot partition
+   *       IDs encode the topic index and a gap would corrupt existing segment routing.</li>
+   *   <li>Removing the last topic (i.e. the new list is shorter by exactly one entry at the tail) triggers:
+   *       force-commit of all consuming segments for that topic, waits for completion, then deletes those segments.
+   *       The config update proceeds after the segments are cleaned up.</li>
+   * </ul>
+   */
+  private void handleStreamTopicDeletion(String tableName, TableConfig newRealtimeTableConfig)
+      throws Exception {
+    StreamIngestionConfig newStreamIngestionConfig =
+        newRealtimeTableConfig.getIngestionConfig() != null
+            ? newRealtimeTableConfig.getIngestionConfig().getStreamIngestionConfig() : null;
+    if (newStreamIngestionConfig == null) {
+      return;
+    }
+
+    String tableNameWithType = TableNameBuilder.REALTIME.tableNameWithType(tableName);
+    TableConfig existingTableConfig = _pinotHelixResourceManager.getRealtimeTableConfig(tableName);
+    if (existingTableConfig == null || existingTableConfig.getIngestionConfig() == null
+        || existingTableConfig.getIngestionConfig().getStreamIngestionConfig() == null) {
+      return;
+    }
+
+    List<Map<String, String>> oldStreamConfigMaps =
+        existingTableConfig.getIngestionConfig().getStreamIngestionConfig().getStreamConfigMaps();
+    List<Map<String, String>> newStreamConfigMaps = newStreamIngestionConfig.getStreamConfigMaps();
+
+    int oldSize = oldStreamConfigMaps != null ? oldStreamConfigMaps.size() : 0;
+    int newSize = newStreamConfigMaps != null ? newStreamConfigMaps.size() : 0;
+
+    if (newSize >= oldSize) {
+      return;
+    }
+
+    // One or more topics were removed. Only removing from the tail is allowed.
+    int numRemoved = oldSize - newSize;
+    if (numRemoved > 1) {
+      throw new ControllerApplicationException(LOGGER,
+          String.format("Cannot remove multiple stream topics at once from table %s. "
+              + "Remove only the last topic (index %d) at a time.", tableName, oldSize - 1),
+          Response.Status.BAD_REQUEST);
+    }
+
+    // Exactly one topic removed. It must be the last one (index oldSize - 1).
+    // If any of the first (newSize) configs changed position, that means a middle entry was removed.
+    for (int i = 0; i < newSize; i++) {
+      if (!oldStreamConfigMaps.get(i).equals(newStreamConfigMaps.get(i))) {
+        throw new ControllerApplicationException(LOGGER,
+            String.format("Cannot remove a stream topic from the middle of streamConfigMaps for table %s. "
+                + "Only the last topic (index %d) may be removed.", tableName, oldSize - 1),
+            Response.Status.BAD_REQUEST);
+      }
+    }
+
+    int removedTopicIndex = oldSize - 1;
+    LOGGER.info("Stream topic at index {} is being removed from table {}. "
+        + "Force-committing and deleting consuming segments.", removedTopicIndex, tableNameWithType);
+
+    BatchConfig batchConfig = BatchConfig.of(
+        BatchConfig.DEFAULT_BATCH_SIZE,
+        BatchConfig.DEFAULT_STATUS_CHECK_INTERVAL_SEC,
+        BatchConfig.DEFAULT_STATUS_CHECK_TIMEOUT_SEC);
+    Set<String> committedSegments =
+        _pinotLLCRealtimeSegmentManager.prepareLastTopicForRemoval(tableNameWithType, removedTopicIndex, batchConfig);
+
+    if (!committedSegments.isEmpty()) {
+      LOGGER.info("Deleting {} committed segments for removed topic index {} from table {}: {}",
+          committedSegments.size(), removedTopicIndex, tableNameWithType, committedSegments);
+      _pinotHelixResourceManager.deleteSegments(tableNameWithType, new ArrayList<>(committedSegments));
+    }
+
+    // Guard against concurrent PUT that may have updated the config while force-commit was in progress.
+    // Re-read the persisted config and verify it still has the expected number of topics. If it has already
+    // been updated (e.g., another caller beat us to it), abort to avoid overwriting their change.
+    TableConfig refreshedConfig = _pinotHelixResourceManager.getRealtimeTableConfig(tableName);
+    if (refreshedConfig != null && refreshedConfig.getIngestionConfig() != null
+        && refreshedConfig.getIngestionConfig().getStreamIngestionConfig() != null) {
+      List<Map<String, String>> currentStreamConfigMaps =
+          refreshedConfig.getIngestionConfig().getStreamIngestionConfig().getStreamConfigMaps();
+      int currentSize = currentStreamConfigMaps != null ? currentStreamConfigMaps.size() : 0;
+      if (currentSize != oldSize) {
+        throw new ControllerApplicationException(LOGGER,
+            String.format("Table %s streamConfigMaps was concurrently modified (expected %d topics, found %d). "
+                + "Aborting update to prevent overwriting concurrent change. Please retry.", tableName, oldSize,
+                currentSize), Response.Status.CONFLICT);
+      }
+    }
   }
 
   /**
