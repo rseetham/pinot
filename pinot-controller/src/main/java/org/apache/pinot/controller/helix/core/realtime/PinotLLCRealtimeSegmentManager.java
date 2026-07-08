@@ -860,7 +860,9 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       }
       String rawTableName = TableNameBuilder.extractRawTableName(realtimeTableName);
       long newSegmentCreationTimeMs = getCurrentTimeMs();
-      LLCSegmentName newLLCSegment = getNextLLCSegmentName(committingLLCSegment, newSegmentCreationTimeMs);
+      LLCSegmentName newLLCSegment =
+          LLCSegmentName.createNextSegment(committingLLCSegment, useMultiTopicFormat(tableConfig),
+              newSegmentCreationTimeMs);
 
       StreamConfig streamConfig =
           streamConfigs.get(committingSegmentPartitionGroupId.getTopicId());
@@ -1861,7 +1863,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
                   latestSegmentName, statusPostSegmentMetadataUpdate);
 
               LLCSegmentName newLLCSegmentName =
-                  getNextLLCSegmentName(latestLLCSegmentName, currentTimeMs);
+                  getNextLLCSegmentName(latestLLCSegmentName, currentTimeMs, useMultiTopicFormat(tableConfig));
               String newSegmentName = newLLCSegmentName.getSegmentName();
               CommittingSegmentDescriptor committingSegmentDescriptor =
                   new CommittingSegmentDescriptor(latestSegmentName,
@@ -2016,7 +2018,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     int numReplicas = getNumReplicas(tableConfig, instancePartitions);
     LLCSegmentName latestLLCSegmentName = new LLCSegmentName(latestSegmentZKMetadata.getSegmentName());
     LLCSegmentName newLLCSegmentName =
-        getNextLLCSegmentName(latestLLCSegmentName, currentTimeMs);
+        getNextLLCSegmentName(latestLLCSegmentName, currentTimeMs, useMultiTopicFormat(tableConfig));
     CommittingSegmentDescriptor committingSegmentDescriptor =
         new CommittingSegmentDescriptor(latestSegmentZKMetadata.getSegmentName(), startOffset.toString(), 0);
     createNewSegmentZKMetadata(tableConfig, streamConfig, newLLCSegmentName, currentTimeMs, committingSegmentDescriptor,
@@ -2127,10 +2129,14 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     }
   }
 
-  private LLCSegmentName getNextLLCSegmentName(LLCSegmentName lastLLCSegmentName, long creationTimeMs) {
-    return new LLCSegmentName(lastLLCSegmentName.getTableName(),
-        lastLLCSegmentName.getTopicPartitionId().getPartitionId(),
-        lastLLCSegmentName.getSequenceNumber() + 1, creationTimeMs);
+  private LLCSegmentName getNextLLCSegmentName(LLCSegmentName lastLLCSegmentName, long creationTimeMs,
+      boolean useMultiTopicFormat) {
+    return LLCSegmentName.createNextSegment(lastLLCSegmentName, useMultiTopicFormat, creationTimeMs);
+  }
+
+  private static boolean useMultiTopicFormat(TableConfig tableConfig) {
+    return tableConfig.getValidationConfig().isEnableTopicIdInSegmentName()
+        && IngestionConfigUtils.hasMultipleStreams(tableConfig);
   }
 
   /**
@@ -2154,9 +2160,13 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     LOGGER.info("Setting up new partition group: {} for table: {} with sequence: {} and startOffset: {}",
         partitionGroupId, realtimeTableName, sequence, startOffset);
 
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(tableConfig);
+    TopicPartitionId topicPartitionId =
+        TopicPartitionId.fromPartitionGroupMetadata(partitionGroupId, hasMultipleStreams);
     String rawTableName = TableNameBuilder.extractRawTableName(realtimeTableName);
     LLCSegmentName newLLCSegmentName =
-        new LLCSegmentName(rawTableName, partitionGroupId, sequence, creationTimeMs);
+        new LLCSegmentName(rawTableName, topicPartitionId, sequence, creationTimeMs,
+            useMultiTopicFormat(tableConfig));
     String newSegmentName = newLLCSegmentName.getSegmentName();
 
     CommittingSegmentDescriptor committingSegmentDescriptor = new CommittingSegmentDescriptor(null,
