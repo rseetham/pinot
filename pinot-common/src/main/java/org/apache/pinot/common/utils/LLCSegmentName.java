@@ -29,8 +29,12 @@ import org.joda.time.format.DateTimeFormatter;
 
 
 /**
- * Represents an LLC (Low-Level Consumer) segment name in the format:
- * {@code {tableName}__{partitionGroupId}__{sequenceNumber}__{date}}
+ * Represents an LLC (Low-Level Consumer) segment name in one of two formats:
+ * <ul>
+ *   <li>Old format (3 separators): {@code {tableName}__{partitionGroupId}__{sequenceNumber}__{date}}</li>
+ *   <li>New multi-topic format (4 separators):
+ *       {@code {tableName}__{topicId}__{partitionGroupId}__{sequenceNumber}__{date}}</li>
+ * </ul>
  */
 public class LLCSegmentName implements Comparable<LLCSegmentName> {
   private static final String SEPARATOR = "__";
@@ -42,27 +46,40 @@ public class LLCSegmentName implements Comparable<LLCSegmentName> {
   private final int _sequenceNumber;
   private final String _creationTime;
   private final String _segmentName;
+  private final boolean _isMultiTopicFormat;
 
   /**
-   * Parses a segment name string.
+   * Parses a segment name string in either old (4-part) or new (5-part) format.
    *
-   * <p>When {@code hasMultipleStreams} is true, composite partition IDs (>= 10000)
-   * are decomposed into their topic and partition components. This ensures that
-   * segment {@code table__10003__5__date} produces {@code TopicPartitionId(1, 3)}
-   * instead of {@code TopicPartitionId(0, 10003)}.
+   * <p>When {@code hasMultipleStreams} is true, old-format composite partition IDs (>= 10000)
+   * are decomposed into their topic and partition components. This ensures that old-format
+   * segment {@code table__10003__5__date} and new-format segment {@code table__1__3__5__date}
+   * produce the same {@link TopicPartitionId}.
    */
   public LLCSegmentName(String segmentName, boolean hasMultipleStreams) {
     String[] parts = StringUtils.splitByWholeSeparator(segmentName, SEPARATOR);
-    Preconditions.checkArgument(parts.length == 4, "Invalid LLC segment name: %s", segmentName);
-    _tableName = parts[0];
-    int rawId = Integer.parseInt(parts[1]);
-    if (hasMultipleStreams && rawId >= TopicPartitionId.PARTITION_PADDING_OFFSET) {
-      _topicPartitionId = TopicPartitionId.fromMultiTopicPinotPartitionId(rawId);
+    if (parts.length == 4) {
+      _tableName = parts[0];
+      int rawId = Integer.parseInt(parts[1]);
+      if (hasMultipleStreams && rawId >= TopicPartitionId.PARTITION_PADDING_OFFSET) {
+        _topicPartitionId = TopicPartitionId.fromMultiTopicPinotPartitionId(rawId);
+      } else {
+        _topicPartitionId = new TopicPartitionId(rawId);
+      }
+      _sequenceNumber = Integer.parseInt(parts[2]);
+      _creationTime = parts[3];
+      _isMultiTopicFormat = false;
+    } else if (parts.length == 5) {
+      _tableName = parts[0];
+      int topicId = Integer.parseInt(parts[1]);
+      int partitionId = Integer.parseInt(parts[2]);
+      _topicPartitionId = new TopicPartitionId(topicId, partitionId);
+      _sequenceNumber = Integer.parseInt(parts[3]);
+      _creationTime = parts[4];
+      _isMultiTopicFormat = true;
     } else {
-      _topicPartitionId = new TopicPartitionId(rawId);
+      throw new IllegalArgumentException("Invalid LLC segment name: " + segmentName);
     }
-    _sequenceNumber = Integer.parseInt(parts[2]);
-    _creationTime = parts[3];
     _segmentName = segmentName;
   }
 
@@ -72,14 +89,54 @@ public class LLCSegmentName implements Comparable<LLCSegmentName> {
     this(segmentName, false);
   }
 
-  @Deprecated
-  public LLCSegmentName(String tableName, int partitionGroupId, int sequenceNumber, long msSinceEpoch) {
+  /** Constructs a segment name from components. The format is determined by {@code useMultiTopicFormat}. */
+  public LLCSegmentName(String tableName, TopicPartitionId topicPartitionId, int sequenceNumber, long msSinceEpoch,
+      boolean useMultiTopicFormat) {
     Preconditions.checkArgument(!tableName.contains(SEPARATOR), "Illegal table name: %s", tableName);
     _tableName = tableName;
-    _topicPartitionId = new TopicPartitionId(partitionGroupId);
+    _topicPartitionId = topicPartitionId;
     _sequenceNumber = sequenceNumber;
     _creationTime = DATE_FORMATTER.print(msSinceEpoch);
-    _segmentName = tableName + SEPARATOR + partitionGroupId + SEPARATOR + sequenceNumber + SEPARATOR + _creationTime;
+    _isMultiTopicFormat = useMultiTopicFormat;
+    if (useMultiTopicFormat) {
+      _segmentName = tableName + SEPARATOR + topicPartitionId.getTopicId() + SEPARATOR
+          + topicPartitionId.getPartitionId() + SEPARATOR + sequenceNumber + SEPARATOR + _creationTime;
+    } else {
+      _segmentName = tableName + SEPARATOR + topicPartitionId.getPartitionId() + SEPARATOR
+          + sequenceNumber + SEPARATOR + _creationTime;
+    }
+  }
+
+  @Deprecated
+  public LLCSegmentName(String tableName, int partitionGroupId, int sequenceNumber, long msSinceEpoch) {
+    this(tableName, new TopicPartitionId(partitionGroupId), sequenceNumber, msSinceEpoch, false);
+  }
+
+  /**
+   * Creates the next segment name, handling format transitions between old and new formats.
+   *
+   * <p>The previous segment must have been parsed with the correct {@code hasMultipleStreams}
+   * context so that its {@link TopicPartitionId} is already canonical.
+   *
+   * <p>Handles all four transitions:
+   * <ul>
+   *   <li>old → old: continue old format, partition ID unchanged</li>
+   *   <li>new → new: continue new format, partition ID unchanged</li>
+   *   <li>old → new: partition ID already decomposed at parse time</li>
+   *   <li>new → old: recompose topicId + partitionId into composite</li>
+   * </ul>
+   */
+  public static LLCSegmentName createNextSegment(LLCSegmentName previous, boolean useMultiTopicFormat,
+      long creationTimeMs) {
+    int nextSeq = previous._sequenceNumber + 1;
+    TopicPartitionId tpId = previous._topicPartitionId;
+
+    if (!useMultiTopicFormat && previous._isMultiTopicFormat) {
+      // new → old: recompose to composite
+      tpId = new TopicPartitionId(tpId.toMultiTopicPinotPartitionId());
+    }
+
+    return new LLCSegmentName(previous._tableName, tpId, nextSeq, creationTimeMs, useMultiTopicFormat);
   }
 
   @Nullable
@@ -99,16 +156,24 @@ public class LLCSegmentName implements Comparable<LLCSegmentName> {
   }
 
   /**
-   * Returns whether the given segment name represents an LLC segment.
+   * Returns whether the given segment name represents an LLC segment (old or new format).
    */
   public static boolean isLLCSegment(String segmentName) {
     int numSeparators = 0;
     int index = 0;
     while ((index = segmentName.indexOf(SEPARATOR, index)) != -1) {
       numSeparators++;
-      index += 2; // SEPARATOR.length()
+      index += 2;
     }
-    return numSeparators == 3;
+    if (numSeparators == 3) {
+      return true;
+    }
+    if (numSeparators == 4) {
+      // Disambiguate from UploadedRealtimeSegmentName: parts[3] is integer (seq) for LLC, date string for uploaded
+      String[] parts = StringUtils.splitByWholeSeparator(segmentName, SEPARATOR);
+      return isNumeric(parts[3]);
+    }
+    return false;
   }
 
   @Deprecated
@@ -116,11 +181,10 @@ public class LLCSegmentName implements Comparable<LLCSegmentName> {
     return isLLCSegment(segmentName);
   }
 
-  /**
-   * Returns the sequence number of the given segment name.
-   */
+  /** Returns the sequence number from a segment name string (handles both formats). */
   public static int getSequenceNumber(String segmentName) {
-    return Integer.parseInt(StringUtils.splitByWholeSeparator(segmentName, SEPARATOR)[2]);
+    String[] parts = StringUtils.splitByWholeSeparator(segmentName, SEPARATOR);
+    return parts.length == 4 ? Integer.parseInt(parts[2]) : Integer.parseInt(parts[3]);
   }
 
   public String getTableName() {
@@ -147,6 +211,10 @@ public class LLCSegmentName implements Comparable<LLCSegmentName> {
   public long getCreationTimeMs() {
     DateTime dateTime = DATE_FORMATTER.parseDateTime(_creationTime);
     return dateTime.getMillis();
+  }
+
+  public boolean isMultiTopicFormat() {
+    return _isMultiTopicFormat;
   }
 
   @JsonValue
@@ -185,5 +253,17 @@ public class LLCSegmentName implements Comparable<LLCSegmentName> {
   @Override
   public String toString() {
     return _segmentName;
+  }
+
+  private static boolean isNumeric(String s) {
+    if (s == null || s.isEmpty()) {
+      return false;
+    }
+    for (int i = 0; i < s.length(); i++) {
+      if (!Character.isDigit(s.charAt(i))) {
+        return false;
+      }
+    }
+    return true;
   }
 }

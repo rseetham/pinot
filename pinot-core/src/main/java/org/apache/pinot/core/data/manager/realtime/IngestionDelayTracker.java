@@ -624,7 +624,6 @@ public class IngestionDelayTracker {
   }
 
   /**
-  /**
    * Method to get if ingestion delay data is available for the given partition (i.e.
    * ingestion info has been reported)
    *
