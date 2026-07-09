@@ -72,7 +72,9 @@ import org.apache.pinot.query.planner.physical.v2.opt.PRelOptRule;
 import org.apache.pinot.query.planner.physical.v2.opt.PRelOptRuleCall;
 import org.apache.pinot.query.planner.plannode.PlanNode;
 import org.apache.pinot.query.routing.QueryServerInstance;
+import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.apache.pinot.sql.parsers.CalciteSqlCompiler;
 import org.slf4j.Logger;
@@ -202,8 +204,13 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
         _physicalPlannerContext.getQueryOptions());
     boolean inferRealtimeSegmentPartition = QueryOptionsUtils.isInferRealtimeSegmentPartition(
         _physicalPlannerContext.getQueryOptions());
+    String realtimeTableNameWithType = TableNameBuilder.forType(TableType.REALTIME).tableNameWithType(tableName);
+    TableConfig realtimeTableConfig = _tableCache.getTableConfig(realtimeTableNameWithType);
+    boolean hasMultipleStreams =
+        realtimeTableConfig != null && IngestionConfigUtils.hasMultipleStreams(realtimeTableConfig);
     TableScanWorkerAssignmentResult workerAssignmentResult = assignTableScan(tableName, fieldNames,
-        instanceIdToSegments, tablePartitionInfoMap, inferInvalidPartitionSegment, inferRealtimeSegmentPartition);
+        instanceIdToSegments, tablePartitionInfoMap, inferInvalidPartitionSegment, inferRealtimeSegmentPartition,
+        hasMultipleStreams);
     TableScanMetadata metadata = new TableScanMetadata(Set.of(tableName), workerAssignmentResult._workerIdToSegmentsMap,
         tableOptions, segmentUnavailableMap, timeBoundaryInfo);
     return tableScan.with(workerAssignmentResult._pinotDataDistribution, metadata);
@@ -216,7 +223,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
   @VisibleForTesting
   static TableScanWorkerAssignmentResult assignTableScan(String tableName, List<String> fieldNames,
       InstanceIdToSegments instanceIdToSegments, Map<String, TablePartitionInfo> tpiMap,
-      boolean inferInvalidPartitionSegment, boolean inferRealtimeSegmentPartition) {
+      boolean inferInvalidPartitionSegment, boolean inferRealtimeSegmentPartition, boolean hasMultipleStreams) {
     Set<String> tableTypes = instanceIdToSegments.getActiveTableTypes();
     Set<String> partitionedTableTypes = tableTypes.stream().filter(tpiMap::containsKey).collect(Collectors.toSet());
     Preconditions.checkState(!tableTypes.isEmpty(), "No routing entry for offline or realtime type");
@@ -229,7 +236,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
         TablePartitionInfo tpi = tpiMap.get(tableType);
         TableScanWorkerAssignmentResult assignmentResult = attemptPartitionedDistribution(tableNameWithType,
             fieldNames, instanceIdToSegments.getSegmentsMap(TableType.valueOf(tableType)), tpi,
-            inferInvalidPartitionSegment, inferRealtimeSegmentPartition);
+            inferInvalidPartitionSegment, inferRealtimeSegmentPartition, hasMultipleStreams);
         if (tpi != null && CollectionUtils.isNotEmpty(tpi.getSegmentsWithInvalidPartition())) {
           // Use SegmentPartitionMetadataManager's logs to find the segments with invalid partitions.
           BROKER_METRICS.addMeteredTableValue(tableNameWithType, BrokerMeter.INVALID_SEGMENT_PARTITION_IN_QUERY,
@@ -280,7 +287,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
   static TableScanWorkerAssignmentResult attemptPartitionedDistribution(String tableNameWithType,
       List<String> fieldNames, Map<String, List<String>> instanceIdToSegmentsMap,
       @Nullable TablePartitionInfo tablePartitionInfo, boolean inferInvalidSegmentPartition,
-      boolean inferRealtimeSegmentPartition) {
+      boolean inferRealtimeSegmentPartition, boolean hasMultipleStreams) {
     if (tablePartitionInfo == null) {
       return null;
     }
@@ -290,7 +297,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
     if (TableType.valueOf(tableType) == TableType.REALTIME && inferRealtimeSegmentPartition) {
       // If we are inferring partitioning for realtime segments, we need to build the TPI with inferred partitions.
       tablePartitionInfo = buildTablePartitionInfoWithInferredPartitions(tableNameWithType, instanceIdToSegmentsMap,
-          tablePartitionInfo);
+          tablePartitionInfo, hasMultipleStreams);
       if (tablePartitionInfo == null) {
         return null;
       }
@@ -315,7 +322,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
     try {
       invalidSegmentsByInferredPartition = getInvalidSegmentsByInferredPartition(
           tablePartitionInfo.getSegmentsWithInvalidPartition(), inferInvalidSegmentPartition, tableNameWithType,
-          numPartitions);
+          numPartitions, hasMultipleStreams);
     } catch (Throwable t) {
       return null;
     }
@@ -392,7 +399,8 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
   @VisibleForTesting
   @Nullable
   static TablePartitionInfo buildTablePartitionInfoWithInferredPartitions(String tableNameWithType,
-      Map<String, List<String>> instanceIdToSegmentsMap, TablePartitionInfo tablePartitionInfo) {
+      Map<String, List<String>> instanceIdToSegmentsMap, TablePartitionInfo tablePartitionInfo,
+      boolean hasMultipleStreams) {
     Preconditions.checkState(TableType.REALTIME.equals(TableNameBuilder.getTableTypeFromTableName(tableNameWithType)),
         "Table %s is not a realtime table. Cannot infer partitions for invalid segments", tableNameWithType);
     String partitionColumn = tablePartitionInfo.getPartitionColumn();
@@ -407,7 +415,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
     for (Map.Entry<String, List<String>> entry : instanceIdToSegmentsMap.entrySet()) {
       List<String> segments = entry.getValue();
       for (String segment : segments) {
-        int partitionId = inferPartitionId(segment, numPartitions);
+        int partitionId = inferPartitionId(segment, numPartitions, hasMultipleStreams);
         if (partitionId == -1) {
           return null;
         } else {
@@ -428,7 +436,8 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
    */
   @VisibleForTesting
   static Map<Integer, List<String>> getInvalidSegmentsByInferredPartition(@Nullable List<String> invalidSegments,
-      boolean inferPartitionsForInvalidSegments, String tableNameWithType, int numPartitions) {
+      boolean inferPartitionsForInvalidSegments, String tableNameWithType, int numPartitions,
+      boolean hasMultipleStreams) {
     if (CollectionUtils.isEmpty(invalidSegments)) {
       return Map.of();
     }
@@ -440,7 +449,7 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
     }
     Map<Integer, List<String>> invalidSegmentsByInferredPartition = new HashMap<>();
     for (String invalidPartitionSegment : invalidSegments) {
-      int partitionId = inferPartitionId(invalidPartitionSegment, numPartitions);
+      int partitionId = inferPartitionId(invalidPartitionSegment, numPartitions, hasMultipleStreams);
       if (partitionId == -1) {
         throw new IllegalStateException(String.format("Could not infer partition for segment: %s. Falling back to "
             + "un-partitioned distribution", invalidPartitionSegment));
@@ -452,14 +461,9 @@ public class LeafStageWorkerAssignmentRule extends PRelOptRule {
   }
 
   @VisibleForTesting
-  static int inferPartitionId(String segmentName, int numPartitions) {
-    // TODO: Thread hasMultipleStreams through the call chain from _tableCache so that
-    //  multi-stream composite partition IDs are properly decomposed into raw stream partition IDs.
-    //  Currently uses the deprecated no-arg parse, which treats composite IDs as single-stream
-    //  partition IDs. This is correct for single-stream tables; for multi-stream tables the
-    //  modulo result may differ but worker assignment remains deterministic.
+  static int inferPartitionId(String segmentName, int numPartitions, boolean hasMultipleStreams) {
     if (LLCSegmentName.isLLCSegment(segmentName)) {
-      LLCSegmentName llc = LLCSegmentName.of(segmentName);
+      LLCSegmentName llc = LLCSegmentName.of(segmentName, hasMultipleStreams);
       return llc != null ? (llc.getTopicPartitionId().getPartitionId() % numPartitions) : -1;
     } else if (UploadedRealtimeSegmentName.isUploadedRealtimeSegmentName(segmentName)) {
       UploadedRealtimeSegmentName uploaded = UploadedRealtimeSegmentName.of(segmentName);
