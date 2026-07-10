@@ -93,6 +93,7 @@ import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.DateTimeFieldSpec;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.slf4j.Logger;
@@ -1046,13 +1047,14 @@ public class PinotSegmentRestletResource {
     IdealState idealState = _pinotHelixResourceManager.getTableIdealState(tableNameWithType);
     Preconditions.checkState(idealState != null, "Ideal State does not exist for table " + tableNameWithType);
 
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(tableConfig);
     Set<String> idealStateSegmentsSet = idealState.getRecord().getMapFields().keySet();
     Map<TopicPartitionId, LLCSegmentName> partitionToOldestSegment =
-        getPartitionIDToOldestSegment(segments, idealStateSegmentsSet);
+        getPartitionIDToOldestSegment(segments, idealStateSegmentsSet, hasMultipleStreams);
     Map<TopicPartitionId, LLCSegmentName> partitionIdToLatestSegment = new HashMap<>();
     Map<TopicPartitionId, Set<String>> partitionIdToSegmentsToDeleteMap =
         getPartitionIdToSegmentsToDeleteMap(partitionToOldestSegment,
-            idealStateSegmentsSet, partitionIdToLatestSegment);
+            idealStateSegmentsSet, partitionIdToLatestSegment, hasMultipleStreams);
 
     Map<String, Object> response = new HashMap<>();
     Map<TopicPartitionId, Object> partitionDetails = new HashMap<>();
@@ -1115,13 +1117,14 @@ public class PinotSegmentRestletResource {
   Map<TopicPartitionId, Set<String>> getPartitionIdToSegmentsToDeleteMap(
       Map<TopicPartitionId, LLCSegmentName> partitionToOldestSegment,
       Set<String> idealStateSegmentsSet,
-      Map<TopicPartitionId, LLCSegmentName> partitionIdToLatestSegment) {
+      Map<TopicPartitionId, LLCSegmentName> partitionIdToLatestSegment,
+      boolean hasMultipleStreams) {
 
     // Find segments to delete (those with higher sequence numbers)
     Map<TopicPartitionId, Set<String>> partitionToSegmentsToDelete = new HashMap<>();
 
     for (String segmentName : idealStateSegmentsSet) {
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
       if (llcSegmentName == null) {
         LOGGER.info("Skip segment: {} not in low-level consumer format", segmentName);
         continue;
@@ -1151,11 +1154,11 @@ public class PinotSegmentRestletResource {
 
   @VisibleForTesting
   Map<TopicPartitionId, LLCSegmentName> getPartitionIDToOldestSegment(
-      List<String> segments, Set<String> idealStateSegmentsSet) {
+      List<String> segments, Set<String> idealStateSegmentsSet, boolean hasMultipleStreams) {
     Map<TopicPartitionId, LLCSegmentName> partitionToOldestSegment = new HashMap<>();
 
     for (String segment : segments) {
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segment);
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segment, hasMultipleStreams);
       if (llcSegmentName == null) {
         LOGGER.warn("Skip segment: {} not in low-level consumer format", segment);
         continue;

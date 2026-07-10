@@ -105,7 +105,7 @@ public class PinotSegmentRestletResourceTest {
 
     // Call the method and check the result
     Map<TopicPartitionId, Set<String>> result = _pinotSegmentRestletResource.getPartitionIdToSegmentsToDeleteMap(
-        partitionToOldestSegment, segmentsToInstanceState.keySet(), partitionIdToLatestSegment);
+        partitionToOldestSegment, segmentsToInstanceState.keySet(), partitionIdToLatestSegment, false);
 
     assertEquals(expectedResponse, result);
 
@@ -139,7 +139,7 @@ public class PinotSegmentRestletResourceTest {
 
     // Call the method and check the result
     Map<TopicPartitionId, LLCSegmentName> result =
-        _pinotSegmentRestletResource.getPartitionIDToOldestSegment(segments, idealStateSegmentSet);
+        _pinotSegmentRestletResource.getPartitionIDToOldestSegment(segments, idealStateSegmentSet, false);
 
     assertEquals(expectedResult, result);
   }

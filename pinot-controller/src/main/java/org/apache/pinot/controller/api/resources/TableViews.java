@@ -63,8 +63,10 @@ import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.core.auth.Actions;
 import org.apache.pinot.core.auth.Authorize;
 import org.apache.pinot.core.auth.TargetType;
+import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.slf4j.Logger;
@@ -211,10 +213,12 @@ public class TableViews {
         return JsonUtils.objectToPrettyString(new HashMap<>());
       }
 
+      TableConfig tableConfig = _pinotHelixResourceManager.getTableConfig(tableNameWithType);
+      boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(tableConfig);
       Map<TopicPartitionId, SortedSet<LLCSegmentName>> partitionIdToSegments = new HashMap<>();
       for (SegmentStatusInfo segmentStatusInfo : segmentStatusInfoList) {
         String segmentName = segmentStatusInfo.getSegmentName();
-        LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+        LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
         if (llcSegmentName == null) {
           continue;
         }

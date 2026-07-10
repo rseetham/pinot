@@ -227,7 +227,8 @@ public class LLCSegmentCompletionHandlers {
     File localTempFile = null;
     try {
       localTempFile = extractSegmentFromFormToLocalTempFile(multiPart, segmentName);
-      String rawTableName = new LLCSegmentName(segmentName).getTableName();
+      // hasMultipleStreams does not affect getTableName() parsing, so false is safe here.
+      String rawTableName = new LLCSegmentName(segmentName, false).getTableName();
       URI segmentFileURI =
           URIUtils.getUri(ControllerFilePathProvider.getInstance().getDataDirURI().toString(), rawTableName,
               URIUtils.encode(SegmentCompletionUtils.generateTmpSegmentFileName(segmentName)));
