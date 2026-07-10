@@ -134,7 +134,7 @@ public class MissingConsumingSegmentFinder {
     Map<TopicPartitionId, LLCSegmentName> partitionGroupIdToLatestConsumingSegmentMap = new HashMap<>();
     Map<TopicPartitionId, LLCSegmentName> partitionGroupIdToLatestCompletedSegmentMap = new HashMap<>();
     idealStateMap.forEach((segmentName, instanceToStatusMap) -> {
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, _hasMultipleStreams);
       if (llcSegmentName != null) { // Skip the uploaded realtime segments that don't conform to llc naming
         if (instanceToStatusMap.containsValue(SegmentStateModel.CONSUMING)) {
           updateMap(partitionGroupIdToLatestConsumingSegmentMap, llcSegmentName);
