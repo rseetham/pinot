@@ -1152,7 +1152,8 @@ public class TableRebalancer {
           tableRebalanceLogger.warn("Start offset is null for segment: {}", segmentName);
           return null;
         }
-        Integer partitionId = SegmentUtils.getPartitionIdFromSegmentName(segmentName);
+        Integer partitionId = SegmentUtils.getPartitionIdFromSegmentName(segmentName,
+            IngestionConfigUtils.hasMultipleStreams(tableConfig));
         // for simplicity here we disable consuming segment info if they do not have partitionId in segmentName
         if (partitionId == null) {
           tableRebalanceLogger.warn("Cannot determine partition id for realtime segment: {}", segmentName);
