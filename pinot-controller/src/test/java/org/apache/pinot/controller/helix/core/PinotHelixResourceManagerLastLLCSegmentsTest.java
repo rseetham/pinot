@@ -22,10 +22,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.spi.config.table.TableConfig;
+import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
+import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.testng.annotations.Test;
@@ -62,6 +65,40 @@ public class PinotHelixResourceManagerLastLLCSegmentsTest {
     PinotHelixResourceManager rm = mock(PinotHelixResourceManager.class);
     when(rm.getSegmentsZKMetadata(REALTIME_TABLE_NAME)).thenReturn(segments);
     when(rm.getTableConfig(REALTIME_TABLE_NAME)).thenReturn(mock(TableConfig.class));
+    when(rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME)).thenCallRealMethod();
+
+    Collection<String> lastCompleted = rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME);
+    Set<String> actual = new HashSet<>(lastCompleted);
+    assertEquals(actual, Set.of(seq1.getSegmentName()));
+  }
+
+  /**
+   * On a multi-stream table, old-format (4-part) segment names encode a composite partition ID
+   * (topicId * 10000 + partitionId) that must be decomposed via {@code hasMultipleStreams=true} so that it
+   * resolves to the same partition as an equivalent new-format (5-part) name. Without threading the flag
+   * through, segments from different topics that happen to share a raw composite ID would incorrectly be
+   * treated as the same partition (or vice versa), corrupting the last-completed-segment-per-partition result.
+   */
+  @Test
+  public void testGetLastLLCCompletedSegmentsDecomposesCompositePartitionIdOnMultiStreamTable() {
+    long now = System.currentTimeMillis();
+    // Old-format composite raw ID for (topicId=1, partitionId=2) is 1 * 10000 + 2 = 10002.
+    LLCSegmentName seq0 = new LLCSegmentName(TABLE_NAME, 10002, 0, now);
+    LLCSegmentName seq1 = new LLCSegmentName(TABLE_NAME, 10002, 1, now);
+
+    List<SegmentZKMetadata> segments = new ArrayList<>();
+    segments.add(doneSegment(seq0.getSegmentName()));
+    segments.add(doneSegment(seq1.getSegmentName()));
+
+    TableConfig multiStreamTableConfig = mock(TableConfig.class);
+    IngestionConfig ingestionConfig = new IngestionConfig();
+    ingestionConfig.setStreamIngestionConfig(
+        new StreamIngestionConfig(List.of(Map.of("streamType", "kafka"), Map.of("streamType", "kafka"))));
+    when(multiStreamTableConfig.getIngestionConfig()).thenReturn(ingestionConfig);
+
+    PinotHelixResourceManager rm = mock(PinotHelixResourceManager.class);
+    when(rm.getSegmentsZKMetadata(REALTIME_TABLE_NAME)).thenReturn(segments);
+    when(rm.getTableConfig(REALTIME_TABLE_NAME)).thenReturn(multiStreamTableConfig);
     when(rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME)).thenCallRealMethod();
 
     Collection<String> lastCompleted = rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME);

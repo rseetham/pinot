@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.controller.helix.core.realtime;
 
+import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -302,5 +303,44 @@ public class MissingConsumingSegmentFinderTest {
     assertEquals(info._totalCount, 2);
     assertEquals(info._newPartitionGroupCount, 0);
     assertEquals(info._maxDurationInMinutes, 6 * 60); // (18:00:00 - 12:00:00) in minutes
+  }
+
+  @Test
+  public void oldFormatSegmentNamesDecomposeCompositePartitionIdWhenHasMultipleStreams() throws Exception {
+    // Old-format (4-part) segment names with a composite partition ID (topicId * 10000 + partitionId) must
+    // decompose to the same TopicPartitionId as the equivalent new-format (5-part) name when the table has
+    // multiple streams, so that a missing consuming segment on one format is correctly matched against the
+    // largest stream offset recorded under the other format's TopicPartitionId.
+    Map<String, Map<String, String>> idealStateMap = new HashMap<>();
+    // partition (topic=1, partition=2), old-format composite raw ID = 1 * 10000 + 2 = 10002. Only a completed
+    // segment is present in ideal state, so this partition should be reported as missing a consuming segment.
+    idealStateMap.put("tableA__10002__0__20220601T0900Z", Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
+
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap =
+        Map.of(new TopicPartitionId(1, 2), new LongMsgOffset(1000));
+
+    SegmentZKMetadata completedSegmentMetadata = mock(SegmentZKMetadata.class);
+    when(completedSegmentMetadata.getEndOffset()).thenReturn("701");
+    MissingConsumingSegmentFinder.SegmentMetadataFetcher metadataFetcher =
+        mock(MissingConsumingSegmentFinder.SegmentMetadataFetcher.class);
+    when(metadataFetcher.fetchSegmentZkMetadata("tableA", "tableA__10002__0__20220601T0900Z"))
+        .thenReturn(completedSegmentMetadata);
+
+    Instant now = Instant.parse("2022-06-01T18:00:00.00Z");
+    MissingConsumingSegmentFinder finder =
+        new MissingConsumingSegmentFinder("tableA", metadataFetcher, partitionGroupIdToLargestStreamOffsetMap,
+            _offsetFactory);
+    setHasMultipleStreams(finder, true);
+
+    MissingConsumingSegmentFinder.MissingSegmentInfo info = finder.findMissingSegments(idealStateMap, now);
+    assertEquals(info._totalCount, 1);
+    assertEquals(info._newPartitionGroupCount, 0);
+  }
+
+  private static void setHasMultipleStreams(MissingConsumingSegmentFinder finder, boolean hasMultipleStreams)
+      throws Exception {
+    Field field = MissingConsumingSegmentFinder.class.getDeclaredField("_hasMultipleStreams");
+    field.setAccessible(true);
+    field.set(finder, hasMultipleStreams);
   }
 }
