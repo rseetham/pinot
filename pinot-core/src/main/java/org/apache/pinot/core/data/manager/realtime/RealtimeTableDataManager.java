@@ -354,8 +354,9 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
    * {@code Long.MIN_VALUE} when it is not available.
    */
   public long getPartitionIngestionTimeMs(String segmentName) {
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getCachedTableConfigAndSchema().getLeft());
     return _ingestionDelayTracker.getPartitionIngestionTimeMs(
-        new LLCSegmentName(segmentName).getTopicPartitionId());
+        new LLCSegmentName(segmentName, hasMultipleStreams).getTopicPartitionId());
   }
 
   /**
@@ -376,8 +377,9 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   @Override
   public void onConsumingToDropped(String segmentName) {
     // NOTE: No need to mark segment ignored here because it should have already been dropped.
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getCachedTableConfigAndSchema().getLeft());
     _ingestionDelayTracker.stopTrackingPartition(
-        new LLCSegmentName(segmentName).getTopicPartitionId());
+        new LLCSegmentName(segmentName, hasMultipleStreams).getTopicPartitionId());
   }
 
   /**
@@ -416,9 +418,10 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     Set<TopicPartitionId> partitionsHostedByThisServer = new HashSet<>();
     List<String> segments = TableStateUtils.getSegmentsInGivenStateForThisInstance(_helixManager, _tableNameWithType,
         CommonConstants.Helix.StateModel.SegmentStateModel.CONSUMING);
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getCachedTableConfigAndSchema().getLeft());
     for (String segmentNameStr : segments) {
       partitionsHostedByThisServer.add(
-          new LLCSegmentName(segmentNameStr).getTopicPartitionId());
+          new LLCSegmentName(segmentNameStr, hasMultipleStreams).getTopicPartitionId());
     }
     return partitionsHostedByThisServer;
   }
@@ -527,7 +530,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     }
     // Register the segment into the consumer coordinator if consumption order is enforced.
     if (_enforceConsumptionInOrder) {
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+      boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getCachedTableConfigAndSchema().getLeft());
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
       if (llcSegmentName != null) {
         getConsumerCoordinator(llcSegmentName.getTopicPartitionId())
             .register(llcSegmentName);
@@ -616,7 +620,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     setDefaultTimeValueIfInvalid(tableConfig, schema, zkMetadata);
 
     // Generates only one semaphore for every partition
-    LLCSegmentName llcSegmentName = new LLCSegmentName(segmentName);
+    LLCSegmentName llcSegmentName =
+        new LLCSegmentName(segmentName, IngestionConfigUtils.hasMultipleStreams(tableConfig));
     TopicPartitionId partitionGroupId = llcSegmentName.getTopicPartitionId();
     ConsumerCoordinator consumerCoordinator = getConsumerCoordinator(partitionGroupId);
 

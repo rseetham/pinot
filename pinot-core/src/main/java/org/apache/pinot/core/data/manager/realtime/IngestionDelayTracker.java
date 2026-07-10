@@ -511,8 +511,10 @@ public class IngestionDelayTracker {
    */
   public void stopTrackingPartition(String segmentName) {
     _segmentsToIgnore.put(segmentName, true);
+    boolean hasMultipleStreams =
+        IngestionConfigUtils.hasMultipleStreams(_realTimeTableDataManager.getCachedTableConfigAndSchema().getLeft());
     removePartitionId(
-        new LLCSegmentName(segmentName).getTopicPartitionId());
+        new LLCSegmentName(segmentName, hasMultipleStreams).getTopicPartitionId());
   }
 
   /**
@@ -566,8 +568,10 @@ public class IngestionDelayTracker {
       // Do not update the tracker state during server startup period or if the segment is marked to be ignored
       return;
     }
+    boolean hasMultipleStreams =
+        IngestionConfigUtils.hasMultipleStreams(_realTimeTableDataManager.getCachedTableConfigAndSchema().getLeft());
     _partitionsMarkedForVerification.put(
-        new LLCSegmentName(segmentName).getTopicPartitionId(),
+        new LLCSegmentName(segmentName, hasMultipleStreams).getTopicPartitionId(),
         _clock.millis());
   }
 

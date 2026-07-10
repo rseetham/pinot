@@ -37,6 +37,7 @@ import org.apache.pinot.common.utils.TopicPartitionId;
 import org.apache.pinot.common.utils.helix.HelixHelper;
 import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
 import org.apache.pinot.spi.utils.CommonConstants.Helix.StateModel.SegmentStateModel;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -202,6 +203,8 @@ public class ConsumerCoordinator {
     String instanceId = _realtimeTableDataManager.getServerInstance();
     TopicPartitionId partitionId = currentSegment.getTopicPartitionId();
     int currentSequenceNumber = currentSegment.getSequenceNumber();
+    boolean hasMultipleStreams =
+        IngestionConfigUtils.hasMultipleStreams(_realtimeTableDataManager.getCachedTableConfigAndSchema().getLeft());
 
     for (Map.Entry<String, Map<String, String>> entry : getSegmentAssignment().entrySet()) {
       String state = entry.getValue().get(instanceId);
@@ -212,7 +215,7 @@ public class ConsumerCoordinator {
         continue;
       }
 
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(entry.getKey());
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(entry.getKey(), hasMultipleStreams);
       if (llcSegmentName == null) {
         // ignore uploaded segments
         continue;
