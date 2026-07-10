@@ -375,7 +375,8 @@ public class UpsertCompactMergeTaskGeneratorTest {
 
     SegmentSelectionResult result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(
         RAW_TABLE_NAME + "_REALTIME", taskConfigs, candidateSegmentsMap,
-        validDocIdsMetadata, alreadyMergedSegments, Map.of(), MinionConstants.ValidDocIdsConsensusMode.UNSAFE, null);
+        validDocIdsMetadata, alreadyMergedSegments, Map.of(), MinionConstants.ValidDocIdsConsensusMode.UNSAFE, null,
+        false);
 
     Assert.assertNotNull(result);
     Assert.assertNotNull(result.getSegmentsForCompactMergeByPartition());
@@ -413,7 +414,8 @@ public class UpsertCompactMergeTaskGeneratorTest {
 
     SegmentSelectionResult result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(
         RAW_TABLE_NAME + "_REALTIME", taskConfigs, candidateSegmentsMap,
-        validDocIdsMetadata, alreadyMergedSegments, Map.of(), MinionConstants.ValidDocIdsConsensusMode.UNSAFE, null);
+        validDocIdsMetadata, alreadyMergedSegments, Map.of(), MinionConstants.ValidDocIdsConsensusMode.UNSAFE, null,
+        false);
 
     Assert.assertNotNull(result);
     Assert.assertEquals(result.getSegmentsForDeletion().size(), 1, "Should have one segment for deletion");
@@ -438,14 +440,15 @@ public class UpsertCompactMergeTaskGeneratorTest {
         meta(segmentName, 0, 100, 100, crc, ServiceStatus.Status.GOOD, "server2")));
     SegmentSelectionResult result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME,
         taskConfigs, candidateSegmentsMap, agree, noMerged, twoReplicas,
-        MinionConstants.ValidDocIdsConsensusMode.EQUAL, null);
+        MinionConstants.ValidDocIdsConsensusMode.EQUAL, null, false);
     Assert.assertTrue(result.getSegmentsForDeletion().contains(segmentName));
 
     Map<String, List<ValidDocIdsMetadataInfo>> disagree = Map.of(segmentName, List.of(
         meta(segmentName, 0, 100, 100, crc, ServiceStatus.Status.GOOD, "server1"),
         meta(segmentName, 1, 99, 100, crc, ServiceStatus.Status.GOOD, "server2")));
     result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME, taskConfigs,
-        candidateSegmentsMap, disagree, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.EQUAL, null);
+        candidateSegmentsMap, disagree, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.EQUAL, null,
+        false);
     Assert.assertTrue(result.getSegmentsForDeletion().isEmpty());
 
     Map<String, List<ValidDocIdsMetadataInfo>> crcMismatch = Map.of(segmentName, List.of(
@@ -453,19 +456,20 @@ public class UpsertCompactMergeTaskGeneratorTest {
         meta(segmentName, 0, 100, 100, crc + 1, ServiceStatus.Status.GOOD, "server2")));
     result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME, taskConfigs,
         candidateSegmentsMap, crcMismatch, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.EQUAL,
-        null);
+        null, false);
     Assert.assertTrue(result.getSegmentsForDeletion().isEmpty());
 
     Map<String, List<ValidDocIdsMetadataInfo>> unhealthy = Map.of(segmentName, List.of(
         meta(segmentName, 0, 100, 100, crc, ServiceStatus.Status.GOOD, "server1"),
         meta(segmentName, 0, 100, 100, crc, ServiceStatus.Status.STARTING, "server2")));
     result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME, taskConfigs,
-        candidateSegmentsMap, unhealthy, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.EQUAL, null);
+        candidateSegmentsMap, unhealthy, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.EQUAL, null,
+        false);
     Assert.assertTrue(result.getSegmentsForDeletion().isEmpty());
 
     result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME, taskConfigs,
         candidateSegmentsMap, crcMismatch, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.UNSAFE,
-        null);
+        null, false);
     Assert.assertTrue(result.getSegmentsForDeletion().contains(segmentName));
 
     Map<String, List<ValidDocIdsMetadataInfo>> mostValidDocs = Map.of(segmentName, List.of(
@@ -473,14 +477,14 @@ public class UpsertCompactMergeTaskGeneratorTest {
         meta(segmentName, 100, 0, 100, crc, ServiceStatus.Status.GOOD, "server2")));
     result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME, taskConfigs,
         candidateSegmentsMap, mostValidDocs, noMerged, twoReplicas,
-        MinionConstants.ValidDocIdsConsensusMode.MOST_VALID_DOCS, null);
+        MinionConstants.ValidDocIdsConsensusMode.MOST_VALID_DOCS, null, false);
     Assert.assertTrue(result.getSegmentsForDeletion().isEmpty());
 
     Map<String, List<ValidDocIdsMetadataInfo>> oneResponded = Map.of(segmentName, List.of(
         meta(segmentName, 0, 100, 100, crc, ServiceStatus.Status.GOOD, "server1")));
     result = UpsertCompactMergeTaskGenerator.processValidDocIdsMetadata(RAW_TABLE_NAME, taskConfigs,
         candidateSegmentsMap, oneResponded, noMerged, twoReplicas, MinionConstants.ValidDocIdsConsensusMode.EQUAL,
-        null);
+        null, false);
     Assert.assertTrue(result.getSegmentsForDeletion().isEmpty());
   }
 

@@ -52,6 +52,7 @@ import org.apache.pinot.spi.config.table.UpsertConfig;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.utils.DataSizeUtils;
 import org.apache.pinot.spi.utils.Enablement;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.TimeUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -208,7 +209,7 @@ public class UpsertCompactMergeTaskGenerator extends BaseTaskGenerator {
       SegmentSelectionResult segmentSelectionResult =
           processValidDocIdsMetadata(tableNameWithType, taskConfigs, candidateSegmentsMap, validDocIdsMetadataList,
               alreadyMergedSegments, validDocIdsMetadataResult.getSegmentToExpectedReplicaCount(), consensusMode,
-              _clusterInfoAccessor.getControllerMetrics());
+              _clusterInfoAccessor.getControllerMetrics(), IngestionConfigUtils.hasMultipleStreams(tableConfig));
 
       if (!segmentSelectionResult.getSegmentsForDeletion().isEmpty()) {
         pinotHelixResourceManager.deleteSegments(tableNameWithType, segmentSelectionResult.getSegmentsForDeletion(),
@@ -271,7 +272,7 @@ public class UpsertCompactMergeTaskGenerator extends BaseTaskGenerator {
       Map<String, String> taskConfigs, Map<String, SegmentZKMetadata> candidateSegmentsMap,
       Map<String, List<ValidDocIdsMetadataInfo>> validDocIdsMetadataInfoMap, Set<String> alreadyMergedSegments,
       Map<String, Integer> segmentToReplicaCount, MinionConstants.ValidDocIdsConsensusMode consensusMode,
-      ControllerMetrics controllerMetrics) {
+      ControllerMetrics controllerMetrics, boolean hasMultipleStreams) {
     Map<Integer, List<SegmentMergerMetadata>> segmentsEligibleForCompactMerge = new HashMap<>();
     Set<String> segmentsForDeletion = new HashSet<>();
 
@@ -337,7 +338,7 @@ public class UpsertCompactMergeTaskGenerator extends BaseTaskGenerator {
         LOGGER.debug("Segment {} already merged. Skipping it for {}", segmentName,
             MinionConstants.UpsertCompactMergeTask.TASK_TYPE);
       } else {
-        Integer partitionID = SegmentUtils.getPartitionIdFromSegmentName(segmentName);
+        Integer partitionID = SegmentUtils.getPartitionIdFromSegmentName(segmentName, hasMultipleStreams);
         if (partitionID == null) {
           LOGGER.warn("Partition ID not found for segment: {}, skipping it for {}", segmentName,
               MinionConstants.UpsertCompactMergeTask.TASK_TYPE);

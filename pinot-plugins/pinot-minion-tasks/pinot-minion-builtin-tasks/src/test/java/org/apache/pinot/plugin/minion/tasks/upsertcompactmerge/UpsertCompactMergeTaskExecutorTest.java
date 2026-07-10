@@ -116,7 +116,7 @@ public class UpsertCompactMergeTaskExecutorTest {
 
     List<SegmentMetadataImpl> segmentMetadataList = Arrays.asList(segment1, segment2, segment3);
 
-    int partitionID = _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList);
+    int partitionID = _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList, false);
     Assert.assertEquals(partitionID, 0);
   }
 
@@ -130,7 +130,7 @@ public class UpsertCompactMergeTaskExecutorTest {
 
     List<SegmentMetadataImpl> segmentMetadataList = Arrays.asList(segment1, segment2);
 
-    _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList);
+    _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList, false);
   }
 
   @Test(expectedExceptions = IllegalStateException.class, expectedExceptionsMessageRegExp = ".*Max creation time "
@@ -201,7 +201,7 @@ public class UpsertCompactMergeTaskExecutorTest {
 
     List<SegmentMetadataImpl> segmentMetadataList = Arrays.asList(segment1);
 
-    _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList);
+    _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList, false);
   }
 
   /**
@@ -225,7 +225,7 @@ public class UpsertCompactMergeTaskExecutorTest {
   @Test(expectedExceptions = NoSuchElementException.class)
   public void testGetCommonPartitionIDForEmptySegmentList() {
     List<SegmentMetadataImpl> segmentMetadataList = List.of();
-    _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList);
+    _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList, false);
   }
 
   /**
@@ -259,7 +259,7 @@ public class UpsertCompactMergeTaskExecutorTest {
 
     List<SegmentMetadataImpl> segmentMetadataList = Arrays.asList(segment1, segment2);
 
-    int partitionID = _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList);
+    int partitionID = _taskExecutor.getCommonPartitionIDForSegments(segmentMetadataList, false);
     Assert.assertEquals(partitionID, 5);
   }
 

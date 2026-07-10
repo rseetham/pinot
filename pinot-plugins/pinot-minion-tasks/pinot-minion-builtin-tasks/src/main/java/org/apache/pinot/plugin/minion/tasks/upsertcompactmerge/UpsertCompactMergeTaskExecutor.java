@@ -45,6 +45,7 @@ import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.data.readers.RecordReader;
 import org.apache.pinot.spi.data.readers.RecordReaderFileConfig;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.Obfuscator;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.roaringbitmap.RoaringBitmap;
@@ -98,7 +99,8 @@ public class UpsertCompactMergeTaskExecutor extends BaseMultipleSegmentsConversi
     }).collect(Collectors.toList());
 
     // validate if partitionID is same for all small segments. Get partition id value for new segment.
-    int partitionID = getCommonPartitionIDForSegments(segmentMetadataList);
+    int partitionID = getCommonPartitionIDForSegments(segmentMetadataList,
+        IngestionConfigUtils.hasMultipleStreams(tableConfig));
 
     // get the max creation time from the task configuration passed by the generator
     long maxCreationTimeOfMergingSegments = getMaxZKCreationTimeFromConfig(configs);
@@ -184,11 +186,11 @@ public class UpsertCompactMergeTaskExecutor extends BaseMultipleSegmentsConversi
     return new SegmentZKMetadataCustomMapModifier(SegmentZKMetadataCustomMapModifier.ModifyMode.UPDATE, updateMap);
   }
 
-  int getCommonPartitionIDForSegments(List<SegmentMetadataImpl> segmentMetadataList) {
+  int getCommonPartitionIDForSegments(List<SegmentMetadataImpl> segmentMetadataList, boolean hasMultipleStreams) {
     List<String> segmentNames =
         segmentMetadataList.stream().map(SegmentMetadataImpl::getName).collect(Collectors.toList());
     Set<Integer> partitionIDSet = segmentNames.stream().map(x -> {
-      Integer segmentPartitionId = SegmentUtils.getPartitionIdFromSegmentName(x);
+      Integer segmentPartitionId = SegmentUtils.getPartitionIdFromSegmentName(x, hasMultipleStreams);
       if (segmentPartitionId == null) {
         throw new IllegalStateException(String.format("Partition id not found for %s", x));
       }
