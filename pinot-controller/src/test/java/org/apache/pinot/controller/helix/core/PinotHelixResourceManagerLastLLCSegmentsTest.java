@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.utils.LLCSegmentName;
+import org.apache.pinot.common.utils.TopicPartitionId;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
 import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
@@ -73,22 +74,27 @@ public class PinotHelixResourceManagerLastLLCSegmentsTest {
   }
 
   /**
-   * On a multi-stream table, old-format (4-part) segment names encode a composite partition ID
-   * (topicId * 10000 + partitionId) that must be decomposed via {@code hasMultipleStreams=true} so that it
-   * resolves to the same partition as an equivalent new-format (5-part) name. Without threading the flag
-   * through, segments from different topics that happen to share a raw composite ID would incorrectly be
-   * treated as the same partition (or vice versa), corrupting the last-completed-segment-per-partition result.
+   * On a multi-stream table, an old-format (4-part) segment name encodes a composite partition ID
+   * (topicId * 10000 + partitionId) that must be decomposed via {@code hasMultipleStreams=true}. This test mixes
+   * one old-format name (raw composite ID 10002, i.e. topicId=1/partitionId=2) with one new-format (5-part) name
+   * built directly from {@code TopicPartitionId(1, 2)} for the same logical partition, at a higher sequence number.
+   * This is the only kind of comparison that discriminates correct decomposition from the bug: if
+   * {@code hasMultipleStreams} were incorrectly false, the old-format name would resolve to
+   * {@code TopicPartitionId(0, 10002)} instead of {@code TopicPartitionId(1, 2)}, landing in a different bucket
+   * than the new-format segment rather than losing to it as the lower-sequence entry in the same bucket.
    */
   @Test
   public void testGetLastLLCCompletedSegmentsDecomposesCompositePartitionIdOnMultiStreamTable() {
     long now = System.currentTimeMillis();
-    // Old-format composite raw ID for (topicId=1, partitionId=2) is 1 * 10000 + 2 = 10002.
-    LLCSegmentName seq0 = new LLCSegmentName(TABLE_NAME, 10002, 0, now);
-    LLCSegmentName seq1 = new LLCSegmentName(TABLE_NAME, 10002, 1, now);
+    // Old-format (4-part) name with composite raw ID for (topicId=1, partitionId=2): 1 * 10000 + 2 = 10002.
+    LLCSegmentName oldFormatSeq0 = new LLCSegmentName(TABLE_NAME, 10002, 0, now);
+    // New-format (5-part) name for the same logical partition (topicId=1, partitionId=2), higher sequence number.
+    LLCSegmentName newFormatSeq1 =
+        new LLCSegmentName(TABLE_NAME, new TopicPartitionId(1, 2), 1, now, true);
 
     List<SegmentZKMetadata> segments = new ArrayList<>();
-    segments.add(doneSegment(seq0.getSegmentName()));
-    segments.add(doneSegment(seq1.getSegmentName()));
+    segments.add(doneSegment(oldFormatSeq0.getSegmentName()));
+    segments.add(doneSegment(newFormatSeq1.getSegmentName()));
 
     TableConfig multiStreamTableConfig = mock(TableConfig.class);
     IngestionConfig ingestionConfig = new IngestionConfig();
@@ -103,7 +109,10 @@ public class PinotHelixResourceManagerLastLLCSegmentsTest {
 
     Collection<String> lastCompleted = rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME);
     Set<String> actual = new HashSet<>(lastCompleted);
-    assertEquals(actual, Set.of(seq1.getSegmentName()));
+    // Both names decompose to the same TopicPartitionId(1, 2) bucket; only the higher-sequence new-format segment
+    // should win. If decomposition were skipped, the old-format segment would land in its own separate bucket
+    // (TopicPartitionId(0, 10002)) and incorrectly also appear as a winner.
+    assertEquals(actual, Set.of(newFormatSeq1.getSegmentName()));
   }
 
   private static SegmentZKMetadata doneSegment(String name) {
