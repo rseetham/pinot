@@ -72,7 +72,14 @@ public class SegmentUtils {
   @Deprecated
   @Nullable
   public static Integer getPartitionIdFromSegmentName(String segmentName) {
-    LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+    return getPartitionIdFromSegmentName(segmentName, false);
+  }
+
+  /// Returns the partition id of a segment based on segment name.
+  /// Can return `null` if the partition id cannot be determined.
+  @Nullable
+  public static Integer getPartitionIdFromSegmentName(String segmentName, boolean hasMultipleStreams) {
+    LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
     if (llcSegmentName != null) {
       return llcSegmentName.getTopicPartitionId().toMultiTopicPinotPartitionId();
     }
