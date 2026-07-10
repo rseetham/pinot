@@ -28,8 +28,8 @@ import org.slf4j.Logger;
 public class PauselessSegmentCommitter extends SplitSegmentCommitter {
   public PauselessSegmentCommitter(Logger segmentLogger, ServerSegmentCompletionProtocolHandler protocolHandler,
       SegmentCompletionProtocol.Request.Params params, SegmentUploader segmentUploader,
-      @Nullable String peerDownloadScheme) {
-    super(segmentLogger, protocolHandler, params, segmentUploader, peerDownloadScheme);
+      @Nullable String peerDownloadScheme, boolean hasMultipleStreams) {
+    super(segmentLogger, protocolHandler, params, segmentUploader, peerDownloadScheme, hasMultipleStreams);
   }
 
   /**

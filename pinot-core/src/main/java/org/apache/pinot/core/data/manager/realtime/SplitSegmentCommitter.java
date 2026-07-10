@@ -40,15 +40,17 @@ public class SplitSegmentCommitter implements SegmentCommitter {
   protected final SegmentUploader _segmentUploader;
   protected final String _peerDownloadScheme;
   protected final Logger _segmentLogger;
+  protected final boolean _hasMultipleStreams;
 
   public SplitSegmentCommitter(Logger segmentLogger, ServerSegmentCompletionProtocolHandler protocolHandler,
       SegmentCompletionProtocol.Request.Params params, SegmentUploader segmentUploader,
-      @Nullable String peerDownloadScheme) {
+      @Nullable String peerDownloadScheme, boolean hasMultipleStreams) {
     _segmentLogger = segmentLogger;
     _protocolHandler = protocolHandler;
     _params = new SegmentCompletionProtocol.Request.Params(params);
     _segmentUploader = segmentUploader;
     _peerDownloadScheme = peerDownloadScheme;
+    _hasMultipleStreams = hasMultipleStreams;
   }
 
   @VisibleForTesting
@@ -58,7 +60,7 @@ public class SplitSegmentCommitter implements SegmentCommitter {
 
   public SplitSegmentCommitter(Logger segmentLogger, ServerSegmentCompletionProtocolHandler protocolHandler,
       SegmentCompletionProtocol.Request.Params params, SegmentUploader segmentUploader) {
-    this(segmentLogger, protocolHandler, params, segmentUploader, null);
+    this(segmentLogger, protocolHandler, params, segmentUploader, null, false);
   }
 
   @Override
@@ -92,7 +94,8 @@ public class SplitSegmentCommitter implements SegmentCommitter {
   // Return null iff the segment upload fails.
   protected String uploadSegment(File segmentTarFile, SegmentUploader segmentUploader,
       SegmentCompletionProtocol.Request.Params params) {
-    URI segmentLocation = segmentUploader.uploadSegment(segmentTarFile, new LLCSegmentName(params.getSegmentName()));
+    URI segmentLocation = segmentUploader.uploadSegment(segmentTarFile,
+        new LLCSegmentName(params.getSegmentName(), _hasMultipleStreams));
     if (segmentLocation != null) {
       return segmentLocation.toString();
     }

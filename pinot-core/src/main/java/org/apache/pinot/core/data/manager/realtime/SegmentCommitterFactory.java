@@ -81,8 +81,9 @@ public class SegmentCommitterFactory {
 
     if (PauselessConsumptionUtils.isPauselessEnabled(_tableConfig)) {
       return new PauselessSegmentCommitter(_logger, _protocolHandler, params, segmentUploader,
-          peerSegmentDownloadScheme);
+          peerSegmentDownloadScheme, IngestionConfigUtils.hasMultipleStreams(_tableConfig));
     }
-    return new SplitSegmentCommitter(_logger, _protocolHandler, params, segmentUploader, peerSegmentDownloadScheme);
+    return new SplitSegmentCommitter(_logger, _protocolHandler, params, segmentUploader, peerSegmentDownloadScheme,
+        IngestionConfigUtils.hasMultipleStreams(_tableConfig));
   }
 }
