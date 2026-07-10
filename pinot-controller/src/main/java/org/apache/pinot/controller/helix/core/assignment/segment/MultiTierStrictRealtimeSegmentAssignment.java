@@ -35,6 +35,7 @@ import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.common.utils.TopicPartitionId;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
 import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 
 
 /**
@@ -107,7 +108,8 @@ public class MultiTierStrictRealtimeSegmentAssignment extends BaseStrictRealtime
       if (isOfflineSegment(entry.getValue())) {
         continue;
       }
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(entry.getKey());
+      LLCSegmentName llcSegmentName =
+          LLCSegmentName.of(entry.getKey(), IngestionConfigUtils.hasMultipleStreams(_tableConfig));
       if (llcSegmentName == null) {
         continue;
       }

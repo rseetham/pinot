@@ -114,7 +114,8 @@ public abstract class BaseStrictRealtimeSegmentAssignment extends RealtimeSegmen
       if (isOfflineSegment(entry.getValue())) {
         continue;
       }
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(entry.getKey());
+      LLCSegmentName llcSegmentName =
+          LLCSegmentName.of(entry.getKey(), IngestionConfigUtils.hasMultipleStreams(_tableConfig));
       if (llcSegmentName == null) {
         uploadedSegments.add(entry.getKey());
         continue;
