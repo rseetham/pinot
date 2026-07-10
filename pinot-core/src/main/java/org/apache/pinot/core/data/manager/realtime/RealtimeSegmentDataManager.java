@@ -1792,19 +1792,11 @@ public class RealtimeSegmentDataManager extends SegmentDataManager {
       _streamPartitionId = _partitionGroupId.getPartitionId();
       _streamConfig = new StreamConfig(_tableNameWithType, streamConfigMaps.get(0));
     } else {
-      if (llcSegmentName.isMultiTopicFormat()) {
-        _streamPartitionId = _partitionGroupId.getPartitionId();
-        int index = _partitionGroupId.getTopicId();
-        Preconditions.checkState(numStreams > index,
-            "Cannot find stream config of index: %s for table: %s", index, _tableNameWithType);
-        _streamConfig = new StreamConfig(_tableNameWithType, streamConfigMaps.get(index));
-      } else {
-        _streamPartitionId = _partitionGroupId.getPartitionId();
-        int index = _partitionGroupId.getTopicId();
-        Preconditions.checkState(numStreams > index,
-            "Cannot find stream config of index: %s for table: %s", index, _tableNameWithType);
-        _streamConfig = new StreamConfig(_tableNameWithType, streamConfigMaps.get(index));
-      }
+      _streamPartitionId = _partitionGroupId.getPartitionId();
+      int index = _partitionGroupId.getTopicId();
+      Preconditions.checkState(numStreams > index,
+          "Cannot find stream config of index: %s for table: %s", index, _tableNameWithType);
+      _streamConfig = new StreamConfig(_tableNameWithType, streamConfigMaps.get(index));
     }
     _streamConsumerFactory = StreamConsumerFactoryProvider.create(_streamConfig);
     _streamPartitionMsgOffsetFactory = _streamConsumerFactory.createStreamMsgOffsetFactory();
