@@ -272,12 +272,13 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       List<StreamConfig> streamConfigs) {
     List<PartitionGroupConsumptionStatus> partitionGroupConsumptionStatusList = new ArrayList<>();
 
+    boolean hasMultipleStreams = streamConfigs.size() > 1;
     // From all segment names in the ideal state, find unique partition group ids and their latest segment
     Map<TopicPartitionId, LLCSegmentName> partitionGroupIdToLatestSegment = new HashMap<>();
     for (String segment : idealState.getRecord().getMapFields().keySet()) {
       // With Pinot upsert table allowing uploads of segments, the segment name of an upsert table segment may not
       // conform to LLCSegment format. We can skip such segments because they are NOT the consuming segments.
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segment);
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segment, hasMultipleStreams);
       if (llcSegmentName == null) {
         continue;
       }
@@ -427,7 +428,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
             setupNewPartitionGroup(tableConfig, streamConfig, metadata, sequenceNumber, currentTimeMs,
                 instancePartitions, numPartitionGroups, numReplicas);
         updateInstanceStatesForNewConsumingSegment(instanceStatesMap, null, segmentName, segmentAssignment,
-            instancePartitionsMap);
+            instancePartitionsMap, IngestionConfigUtils.hasMultipleStreams(tableConfig));
       }
     }
 
@@ -839,7 +840,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     int numReplicas = getNumReplicas(tableConfig, instancePartitions);
 
     String newConsumingSegmentName = null;
-    LLCSegmentName committingLLCSegment = new LLCSegmentName(committingSegmentName);
+    LLCSegmentName committingLLCSegment =
+        new LLCSegmentName(committingSegmentName, IngestionConfigUtils.hasMultipleStreams(tableConfig));
     TopicPartitionId committingSegmentPartitionGroupId = committingLLCSegment.getTopicPartitionId();
 
     List<StreamConfig> streamConfigs = IngestionConfigUtils.getStreamConfigs(tableConfig);
@@ -853,7 +855,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         idealState = getIdealState(realtimeTableName);
       }
       if (idealState != null
-          && (isTablePaused(idealState) || isTopicPaused(idealState, committingSegmentName))) {
+          && (isTablePaused(idealState) || isTopicPaused(idealState, committingSegmentName,
+              IngestionConfigUtils.hasMultipleStreams(tableConfig)))) {
         LOGGER.info("Skipping creation of new segment metadata after segment: {} during commit. Reason: table/topic is "
             + "paused.", committingSegmentName);
         return null;
@@ -1432,10 +1435,11 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
   private Map<TopicPartitionId, SegmentZKMetadata> getLatestSegmentZKMetadataMap(
       String realtimeTableName) {
     List<String> segments = getLLCSegments(realtimeTableName);
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getTableConfig(realtimeTableName));
 
     Map<TopicPartitionId, LLCSegmentName> latestLLCSegmentNameMap = new HashMap<>();
     for (String segmentName : segments) {
-      LLCSegmentName llcSegmentName = new LLCSegmentName(segmentName);
+      LLCSegmentName llcSegmentName = new LLCSegmentName(segmentName, hasMultipleStreams);
       latestLLCSegmentNameMap.compute(llcSegmentName.getTopicPartitionId(),
           (partitionId, latestLLCSegmentName) -> {
             if (latestLLCSegmentName == null) {
@@ -1552,9 +1556,10 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         throw new HelixHelper.PermanentUpdaterException(
             "Exceeded max segment completion time for segment " + committingSegmentName);
       }
+      boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getTableConfig(realtimeTableName));
       updateInstanceStatesForNewConsumingSegment(idealState.getRecord().getMapFields(), committingSegmentName,
-          isTablePaused(idealState) || isTopicPaused(idealState, committingSegmentName), newSegmentName,
-          segmentAssignment, instancePartitionsMap);
+          isTablePaused(idealState) || isTopicPaused(idealState, committingSegmentName, hasMultipleStreams),
+          newSegmentName, segmentAssignment, instancePartitionsMap, hasMultipleStreams);
       return idealState;
     };
     if (_controllerConf.getSegmentCompletionGroupCommitEnabled()) {
@@ -1585,8 +1590,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     return false;
   }
 
-  public static boolean isTopicPaused(IdealState idealState, String segmentName) {
-    LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+  public static boolean isTopicPaused(IdealState idealState, String segmentName, boolean hasMultipleStreams) {
+    LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
     if (llcSegmentName != null) {
       return isTopicPaused(idealState,
           llcSegmentName.getTopicPartitionId().getTopicId());
@@ -1610,13 +1615,22 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
   void updateInstanceStatesForNewConsumingSegment(Map<String, Map<String, String>> instanceStatesMap,
       @Nullable String committingSegmentName, @Nullable String newSegmentName, SegmentAssignment segmentAssignment,
       Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap) {
+    updateInstanceStatesForNewConsumingSegment(instanceStatesMap, committingSegmentName, newSegmentName,
+        segmentAssignment, instancePartitionsMap, false);
+  }
+
+  @VisibleForTesting
+  void updateInstanceStatesForNewConsumingSegment(Map<String, Map<String, String>> instanceStatesMap,
+      @Nullable String committingSegmentName, @Nullable String newSegmentName, SegmentAssignment segmentAssignment,
+      Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap, boolean hasMultipleStreams) {
     updateInstanceStatesForNewConsumingSegment(instanceStatesMap, committingSegmentName, false, newSegmentName,
-        segmentAssignment, instancePartitionsMap);
+        segmentAssignment, instancePartitionsMap, hasMultipleStreams);
   }
 
   private void updateInstanceStatesForNewConsumingSegment(Map<String, Map<String, String>> instanceStatesMap,
       @Nullable String committingSegmentName, boolean isTableOrTopicPaused, @Nullable String newSegmentName,
-      SegmentAssignment segmentAssignment, Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap) {
+      SegmentAssignment segmentAssignment, Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap,
+      boolean hasMultipleStreams) {
     if (committingSegmentName != null) {
       // Change committing segment state to ONLINE
       Map<String, String> committingSegmentInstanceStateMap = instanceStatesMap.get(committingSegmentName);
@@ -1637,11 +1651,11 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     // The following check prevents the table from going into such a state (but does not prevent the root cause
     // of attempting such a zk update).
     if (newSegmentName != null && !isTableOrTopicPaused) {
-      LLCSegmentName newLLCSegmentName = new LLCSegmentName(newSegmentName);
+      LLCSegmentName newLLCSegmentName = new LLCSegmentName(newSegmentName, hasMultipleStreams);
       TopicPartitionId partitionId = newLLCSegmentName.getTopicPartitionId();
       int seqNum = newLLCSegmentName.getSequenceNumber();
       for (String segmentNameStr : instanceStatesMap.keySet()) {
-        LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentNameStr);
+        LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentNameStr, hasMultipleStreams);
         if (llcSegmentName == null) {
           // skip the segment name if the name is not in low-level consumer format
           // such segment name can appear for uploaded segment
@@ -1840,7 +1854,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       TopicPartitionId partitionId = entry.getKey();
       SegmentZKMetadata latestSegmentZKMetadata = entry.getValue();
       String latestSegmentName = latestSegmentZKMetadata.getSegmentName();
-      LLCSegmentName latestLLCSegmentName = new LLCSegmentName(latestSegmentName);
+      LLCSegmentName latestLLCSegmentName = new LLCSegmentName(latestSegmentName, hasMultipleStreams);
       int streamConfigIdx = partitionId.getTopicId();
 
       Map<String, String> instanceStateMap = instanceStatesMap.get(latestSegmentName);
@@ -1870,13 +1884,13 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
                   currentTimeMs,
                   committingSegmentDescriptor, latestSegmentZKMetadata, instancePartitions, numPartitions, numReplicas);
               updateInstanceStatesForNewConsumingSegment(instanceStatesMap, latestSegmentName, newSegmentName,
-                  segmentAssignment, instancePartitionsMap);
+                  segmentAssignment, instancePartitionsMap, hasMultipleStreams);
             } else { // partition group reached end of life
               LOGGER.info("PartitionGroup: {} has reached end of life. Updating ideal state for segment: {}. "
                       + "Skipping creation of new ZK metadata and new segment in ideal state", partitionId,
                   latestSegmentName);
               updateInstanceStatesForNewConsumingSegment(instanceStatesMap, latestSegmentName, null, segmentAssignment,
-                  instancePartitionsMap);
+                  instancePartitionsMap, hasMultipleStreams);
             }
           } else if (latestSegmentZKMetadata.getStatus() == Status.IN_PROGRESS
               && _isPartialOfflineReplicaRepairEnabled) {
@@ -1969,7 +1983,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
           String previousConsumingSegment = null;
           for (Map.Entry<String, Map<String, String>> segmentEntry : instanceStatesMap.entrySet()) {
             if (segmentEntry.getValue().containsValue(SegmentStateModel.CONSUMING)
-                && new LLCSegmentName(segmentEntry.getKey()).getTopicPartitionId()
+                && new LLCSegmentName(segmentEntry.getKey(), hasMultipleStreams).getTopicPartitionId()
                 .equals(partitionId)) {
               previousConsumingSegment = segmentEntry.getKey();
               break;
@@ -1982,7 +1996,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
             _controllerMetrics.addMeteredTableValue(realtimeTableName, ControllerMeter.LLC_STREAM_DATA_LOSS, 1L);
           }
           updateInstanceStatesForNewConsumingSegment(instanceStatesMap, previousConsumingSegment, latestSegmentName,
-              segmentAssignment, instancePartitionsMap);
+              segmentAssignment, instancePartitionsMap, hasMultipleStreams);
         } else {
           LOGGER.error("Got unexpected status: {} in segment ZK metadata for segment: {}",
               latestSegmentZKMetadata.getStatus(), latestSegmentName);
@@ -2000,7 +2014,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
               setupNewPartitionGroup(tableConfig, streamMetadata.getStreamConfig(), partitionGroupMetadata,
                   currentTimeMs, instancePartitions, numPartitions, numReplicas);
           updateInstanceStatesForNewConsumingSegment(instanceStatesMap, null, newSegmentName, segmentAssignment,
-              instancePartitionsMap);
+              instancePartitionsMap, hasMultipleStreams);
         }
       }
     }
@@ -2014,7 +2028,9 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       Map<String, Map<String, String>> instanceStatesMap, SegmentAssignment segmentAssignment,
       Map<InstancePartitionsType, InstancePartitions> instancePartitionsMap, StreamPartitionMsgOffset startOffset) {
     int numReplicas = getNumReplicas(tableConfig, instancePartitions);
-    LLCSegmentName latestLLCSegmentName = new LLCSegmentName(latestSegmentZKMetadata.getSegmentName());
+    LLCSegmentName latestLLCSegmentName =
+        new LLCSegmentName(latestSegmentZKMetadata.getSegmentName(),
+            IngestionConfigUtils.hasMultipleStreams(tableConfig));
     LLCSegmentName newLLCSegmentName =
         getNextLLCSegmentName(latestLLCSegmentName, currentTimeMs, useMultiTopicFormat(tableConfig));
     CommittingSegmentDescriptor committingSegmentDescriptor =
@@ -2023,7 +2039,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         latestSegmentZKMetadata, instancePartitions, numPartitions, numReplicas);
     String newSegmentName = newLLCSegmentName.getSegmentName();
     updateInstanceStatesForNewConsumingSegment(instanceStatesMap, null, newSegmentName, segmentAssignment,
-        instancePartitionsMap);
+        instancePartitionsMap, IngestionConfigUtils.hasMultipleStreams(tableConfig));
   }
 
   private Map<TopicPartitionId, StreamPartitionMsgOffset> fetchPartitionGroupIdToSmallestOffset(
@@ -2071,7 +2087,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       for (Map.Entry<TopicPartitionId, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
         TopicPartitionId partitionGroupId = entry.getKey();
         SegmentZKMetadata zkMetadata = entry.getValue();
-        LLCSegmentName llcSegmentName = new LLCSegmentName(zkMetadata.getSegmentName());
+        // numStreams == 1, so this table cannot have multiple streams.
+        LLCSegmentName llcSegmentName = new LLCSegmentName(zkMetadata.getSegmentName(), false);
         result.add(new PartitionGroupConsumptionStatus(partitionGroupId.toMultiTopicPinotPartitionId(),
             llcSegmentName.getSequenceNumber(),
             offsetFactory.create(zkMetadata.getStartOffset()),
@@ -2085,7 +2102,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         int index = partitionGroupId.getTopicId();
         int streamPartitionId = partitionGroupId.getPartitionId();
         SegmentZKMetadata zkMetadata = entry.getValue();
-        LLCSegmentName llcSegmentName = new LLCSegmentName(zkMetadata.getSegmentName());
+        // numStreams > 1, so this table has multiple streams.
+        LLCSegmentName llcSegmentName = new LLCSegmentName(zkMetadata.getSegmentName(), true);
         StreamPartitionMsgOffsetFactory offsetFactory = offsetFactories[index];
         if (offsetFactory == null) {
           offsetFactory =
@@ -2591,8 +2609,9 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
 
     IdealState idealState = getIdealState(tableNameWithType);
     Set<String> allConsumingSegments = findConsumingSegments(idealState);
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(getTableConfig(tableNameWithType));
     Set<String> targetConsumingSegments =
-        filterSegmentsToCommit(allConsumingSegments, partitionGroupIdsToCommit, segmentsToCommit);
+        filterSegmentsToCommit(allConsumingSegments, partitionGroupIdsToCommit, segmentsToCommit, hasMultipleStreams);
     if ((batchConfig == null) || (batchConfig.getBatchSize() >= targetConsumingSegments.size())) {
       // No need to divide segments in batches.
       sendForceCommitMessageToServers(tableNameWithType, targetConsumingSegments);
@@ -2712,7 +2731,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
    * Among all consuming segments, filter the ones that are in the given partitions or segments.
    */
   private Set<String> filterSegmentsToCommit(Set<String> allConsumingSegments,
-      @Nullable String partitionGroupIdsToCommitStr, @Nullable String segmentsToCommitStr) {
+      @Nullable String partitionGroupIdsToCommitStr, @Nullable String segmentsToCommitStr,
+      boolean hasMultipleStreams) {
     if (partitionGroupIdsToCommitStr == null && segmentsToCommitStr == null) {
       return allConsumingSegments;
     }
@@ -2741,7 +2761,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         .collect(Collectors.toSet());
     Set<String> targetSegments = allConsumingSegments.stream()
         .filter(segmentName -> partitionsToCommit.contains(
-            new LLCSegmentName(segmentName).getTopicPartitionId()))
+            new LLCSegmentName(segmentName, hasMultipleStreams).getTopicPartitionId()))
         .collect(Collectors.toSet());
     Preconditions.checkState(!targetSegments.isEmpty(), "Cannot find segments to commit for partitions: %s",
         partitionGroupIdsToCommitStr);
@@ -2842,7 +2862,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
           pauseState, tableNameWithType, indexOfPausedTopics);
       return new IdealState(znRecord);
     }, RetryPolicies.noDelayRetryPolicy(3));
-    Set<String> consumingSegments = findConsumingSegmentsOfTopics(updatedIdealState, indexOfPausedTopics);
+    Set<String> consumingSegments = findConsumingSegmentsOfTopics(updatedIdealState, indexOfPausedTopics,
+        IngestionConfigUtils.hasMultipleStreams(getTableConfig(tableNameWithType)));
     sendForceCommitMessageToServers(tableNameWithType, consumingSegments);
     return extractTablePauseState(updatedIdealState);
   }
@@ -2924,10 +2945,11 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     return consumingSegments;
   }
 
-  private Set<String> findConsumingSegmentsOfTopics(IdealState idealState, List<Integer> topicIndices) {
+  private Set<String> findConsumingSegmentsOfTopics(IdealState idealState, List<Integer> topicIndices,
+      boolean hasMultipleStreams) {
     Set<String> consumingSegments = new TreeSet<>();
     idealState.getRecord().getMapFields().forEach((segmentName, instanceToStateMap) -> {
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
       if (llcSegmentName != null && !topicIndices.contains(
           llcSegmentName.getTopicPartitionId().getTopicId())) {
         return;
@@ -2991,6 +3013,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       boolean repairErrorSegmentsForPartialUpsertOrDedup) {
     boolean isPauselessTable = PauselessConsumptionUtils.isPauselessEnabled(tableConfig);
     String realtimeTableName = tableConfig.getTableName();
+    boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(tableConfig);
     // Fetch ideal state and external view
     IdealState idealState = getIdealState(realtimeTableName);
     ExternalView externalView = _helixResourceManager.getTableExternalView(realtimeTableName);
@@ -3009,7 +3032,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       String segmentName = entry.getKey();
 
       // Skip non-LLC segments
-      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+      LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName, hasMultipleStreams);
       if (llcSegmentName == null) {
         continue;
       }
