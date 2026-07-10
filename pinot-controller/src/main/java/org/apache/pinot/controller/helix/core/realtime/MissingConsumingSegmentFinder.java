@@ -66,6 +66,7 @@ public class MissingConsumingSegmentFinder {
   private final SegmentMetadataFetcher _segmentMetadataFetcher;
   private final Map<TopicPartitionId, StreamPartitionMsgOffset> _partitionGroupIdToLargestStreamOffsetMap;
   private final StreamPartitionMsgOffsetFactory _streamPartitionMsgOffsetFactory;
+  private final boolean _hasMultipleStreams;
 
   private ControllerMetrics _controllerMetrics;
 
@@ -76,6 +77,7 @@ public class MissingConsumingSegmentFinder {
     _segmentMetadataFetcher = new SegmentMetadataFetcher(propertyStore, controllerMetrics);
     _streamPartitionMsgOffsetFactory =
         StreamConsumerFactoryProvider.create(streamConfigs.get(0)).createStreamMsgOffsetFactory();
+    _hasMultipleStreams = streamConfigs.size() > 1;
 
     // create partition group id to largest stream offset map
     _partitionGroupIdToLargestStreamOffsetMap = new HashMap<>();
@@ -88,11 +90,10 @@ public class MissingConsumingSegmentFinder {
       PinotTableIdealStateBuilder.getStreamMetadataList(streamConfigs, List.of(),
               pauseState == null ? new ArrayList<>() : pauseState.getIndexOfInactiveTopics(), false)
           .forEach(streamMetadata -> {
-            boolean hasMultipleStreams = streamConfigs.size() > 1;
             for (PartitionGroupMetadata metadata : streamMetadata.getPartitionGroupMetadataList()) {
               _partitionGroupIdToLargestStreamOffsetMap.put(
                   TopicPartitionId.fromPartitionGroupMetadata(
-                      metadata.getPartitionGroupId(), hasMultipleStreams),
+                      metadata.getPartitionGroupId(), _hasMultipleStreams),
                   metadata.getStartOffset());
             }
           });
@@ -112,6 +113,7 @@ public class MissingConsumingSegmentFinder {
     _segmentMetadataFetcher = segmentMetadataFetcher;
     _partitionGroupIdToLargestStreamOffsetMap = partitionGroupIdToLargestStreamOffsetMap;
     _streamPartitionMsgOffsetFactory = streamPartitionMsgOffsetFactory;
+    _hasMultipleStreams = false;
   }
 
   public void findAndEmitMetrics(IdealState idealState) {
