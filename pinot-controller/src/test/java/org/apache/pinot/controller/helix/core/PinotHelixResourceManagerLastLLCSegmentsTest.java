@@ -25,11 +25,11 @@ import java.util.List;
 import java.util.Set;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.utils.LLCSegmentName;
+import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.testng.annotations.Test;
 
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertEquals;
@@ -61,8 +61,8 @@ public class PinotHelixResourceManagerLastLLCSegmentsTest {
 
     PinotHelixResourceManager rm = mock(PinotHelixResourceManager.class);
     when(rm.getSegmentsZKMetadata(REALTIME_TABLE_NAME)).thenReturn(segments);
+    when(rm.getTableConfig(REALTIME_TABLE_NAME)).thenReturn(mock(TableConfig.class));
     when(rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME)).thenCallRealMethod();
-    when(rm.getLastLLCCompletedSegments(anyList())).thenCallRealMethod();
 
     Collection<String> lastCompleted = rm.getLastLLCCompletedSegments(REALTIME_TABLE_NAME);
     Set<String> actual = new HashSet<>(lastCompleted);

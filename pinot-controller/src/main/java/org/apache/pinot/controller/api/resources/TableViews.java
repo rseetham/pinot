@@ -214,7 +214,7 @@ public class TableViews {
       }
 
       TableConfig tableConfig = _pinotHelixResourceManager.getTableConfig(tableNameWithType);
-      boolean hasMultipleStreams = IngestionConfigUtils.hasMultipleStreams(tableConfig);
+      boolean hasMultipleStreams = tableConfig != null && IngestionConfigUtils.hasMultipleStreams(tableConfig);
       Map<TopicPartitionId, SortedSet<LLCSegmentName>> partitionIdToSegments = new HashMap<>();
       for (SegmentStatusInfo segmentStatusInfo : segmentStatusInfoList) {
         String segmentName = segmentStatusInfo.getSegmentName();

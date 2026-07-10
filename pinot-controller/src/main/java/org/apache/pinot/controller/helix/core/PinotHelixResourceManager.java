@@ -1158,8 +1158,11 @@ public class PinotHelixResourceManager {
   /// redundant ZK fetch when the caller already holds the list (e.g. periodic tasks that scan all
   /// segments of a table and want to derive the last-completed LLC segment per partition without
   /// re-reading the property store).
-  public Collection<String> getLastLLCCompletedSegments(List<? extends SegmentZKMetadata> segmentZKMetadataList) {
-    return getLastLLCCompletedSegments(segmentZKMetadataList, false);
+  public Collection<String> getLastLLCCompletedSegments(String tableNameWithType,
+      List<? extends SegmentZKMetadata> segmentZKMetadataList) {
+    TableConfig tableConfig = getTableConfig(tableNameWithType);
+    boolean hasMultipleStreams = tableConfig != null && IngestionConfigUtils.hasMultipleStreams(tableConfig);
+    return getLastLLCCompletedSegments(segmentZKMetadataList, hasMultipleStreams);
   }
 
   private Collection<String> getLastLLCCompletedSegments(List<? extends SegmentZKMetadata> segmentZKMetadataList,
