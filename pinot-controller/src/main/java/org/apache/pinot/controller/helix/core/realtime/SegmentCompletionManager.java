@@ -106,6 +106,17 @@ public class SegmentCompletionManager {
     return StreamConsumerFactoryProvider.create(streamConfig).createStreamMsgOffsetFactory();
   }
 
+  /**
+   * Parses a segment name string into an {@link LLCSegmentName}, resolving {@code hasMultipleStreams} from the
+   * segment's table config so that old-format composite partition IDs are decomposed correctly.
+   */
+  private LLCSegmentName parseLlcSegmentName(String segmentNameStr) {
+    String rawTableName = new LLCSegmentName(segmentNameStr, false).getTableName();
+    TableConfig tableConfig = _segmentManager.getTableConfig(TableNameBuilder.REALTIME.tableNameWithType(rawTableName));
+    boolean hasMultipleStreams = tableConfig != null && IngestionConfigUtils.hasMultipleStreams(tableConfig);
+    return new LLCSegmentName(segmentNameStr, hasMultipleStreams);
+  }
+
   public Long getCommitTime(String tableName) {
     return _commitTimeMap.get(tableName);
   }
@@ -155,7 +166,7 @@ public class SegmentCompletionManager {
    */
   public SegmentCompletionProtocol.Response segmentConsumed(SegmentCompletionProtocol.Request.Params reqParams) {
     final String segmentNameStr = reqParams.getSegmentName();
-    final LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+    final LLCSegmentName segmentName = parseLlcSegmentName(segmentNameStr);
     final String tableName = segmentName.getTableName();
     if (!isLeader(tableName) || !_helixManager.isConnected()) {
       return SegmentCompletionProtocol.RESP_NOT_LEADER;
@@ -194,7 +205,7 @@ public class SegmentCompletionManager {
   public SegmentCompletionProtocol.Response segmentCommitStart(
       final SegmentCompletionProtocol.Request.Params reqParams) {
     final String segmentNameStr = reqParams.getSegmentName();
-    final LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+    final LLCSegmentName segmentName = parseLlcSegmentName(segmentNameStr);
     final String tableName = segmentName.getTableName();
     if (!isLeader(tableName) || !_helixManager.isConnected()) {
       return SegmentCompletionProtocol.RESP_NOT_LEADER;
@@ -219,7 +230,7 @@ public class SegmentCompletionManager {
 
   public SegmentCompletionProtocol.Response extendBuildTime(final SegmentCompletionProtocol.Request.Params reqParams) {
     final String segmentNameStr = reqParams.getSegmentName();
-    final LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+    final LLCSegmentName segmentName = parseLlcSegmentName(segmentNameStr);
     final String tableName = segmentName.getTableName();
     if (!isLeader(tableName) || !_helixManager.isConnected()) {
       return SegmentCompletionProtocol.RESP_NOT_LEADER;
@@ -252,7 +263,7 @@ public class SegmentCompletionManager {
       LOGGER.warn("Segment {} cannot build is a false alert", segmentName);
       return SegmentCompletionProtocol.RESP_DISCARD;
     }
-    _segmentManager.reduceSegmentSizeAndReset(new LLCSegmentName(reqParams.getSegmentName()), reqParams.getNumRows());
+    _segmentManager.reduceSegmentSizeAndReset(parseLlcSegmentName(reqParams.getSegmentName()), reqParams.getNumRows());
     _fsmMap.remove(segmentName);
     return SegmentCompletionProtocol.RESP_PROCESSED;
   }
@@ -265,7 +276,7 @@ public class SegmentCompletionManager {
   public SegmentCompletionProtocol.Response segmentStoppedConsuming(
       SegmentCompletionProtocol.Request.Params reqParams) {
     final String segmentNameStr = reqParams.getSegmentName();
-    final LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+    final LLCSegmentName segmentName = parseLlcSegmentName(segmentNameStr);
     final String tableName = segmentName.getTableName();
     if (!isLeader(tableName) || !_helixManager.isConnected()) {
       return SegmentCompletionProtocol.RESP_NOT_LEADER;
@@ -300,7 +311,7 @@ public class SegmentCompletionManager {
   public SegmentCompletionProtocol.Response segmentCommitEnd(SegmentCompletionProtocol.Request.Params reqParams,
       CommittingSegmentDescriptor committingSegmentDescriptor) {
     final String segmentNameStr = reqParams.getSegmentName();
-    final LLCSegmentName segmentName = new LLCSegmentName(segmentNameStr);
+    final LLCSegmentName segmentName = parseLlcSegmentName(segmentNameStr);
     final String tableName = segmentName.getTableName();
     if (!isLeader(tableName) || !_helixManager.isConnected()) {
       return SegmentCompletionProtocol.RESP_NOT_LEADER;
