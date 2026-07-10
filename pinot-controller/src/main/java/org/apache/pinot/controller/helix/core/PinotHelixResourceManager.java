@@ -1149,7 +1149,9 @@ public class PinotHelixResourceManager {
   }
 
   public Collection<String> getLastLLCCompletedSegments(String tableNameWithType) {
-    return getLastLLCCompletedSegments(getSegmentsZKMetadata(tableNameWithType));
+    TableConfig tableConfig = getTableConfig(tableNameWithType);
+    boolean hasMultipleStreams = tableConfig != null && IngestionConfigUtils.hasMultipleStreams(tableConfig);
+    return getLastLLCCompletedSegments(getSegmentsZKMetadata(tableNameWithType), hasMultipleStreams);
   }
 
   /// Overload that operates on a caller-supplied list of {@link SegmentZKMetadata}, avoiding a
@@ -1157,10 +1159,15 @@ public class PinotHelixResourceManager {
   /// segments of a table and want to derive the last-completed LLC segment per partition without
   /// re-reading the property store).
   public Collection<String> getLastLLCCompletedSegments(List<? extends SegmentZKMetadata> segmentZKMetadataList) {
+    return getLastLLCCompletedSegments(segmentZKMetadataList, false);
+  }
+
+  private Collection<String> getLastLLCCompletedSegments(List<? extends SegmentZKMetadata> segmentZKMetadataList,
+      boolean hasMultipleStreams) {
     Map<TopicPartitionId, String> partitionIdToLastLLCCompletedSegmentMap = new HashMap<>();
     for (SegmentZKMetadata zkMetadata : segmentZKMetadataList) {
       if (zkMetadata.getStatus() == CommonConstants.Segment.Realtime.Status.DONE) {
-        LLCSegmentName llcName = LLCSegmentName.of(zkMetadata.getSegmentName());
+        LLCSegmentName llcName = LLCSegmentName.of(zkMetadata.getSegmentName(), hasMultipleStreams);
         if (llcName == null) {
           // llcName can be null if the segment is uploaded through offline ingestion
           continue;
@@ -1169,7 +1176,7 @@ public class PinotHelixResourceManager {
         int sequenceNumber = llcName.getSequenceNumber();
         String lastCompletedSegName = partitionIdToLastLLCCompletedSegmentMap.get(partitionGroupId);
         if (lastCompletedSegName == null
-            || LLCSegmentName.of(lastCompletedSegName).getSequenceNumber() < sequenceNumber) {
+            || LLCSegmentName.of(lastCompletedSegName, hasMultipleStreams).getSequenceNumber() < sequenceNumber) {
           partitionIdToLastLLCCompletedSegmentMap.put(partitionGroupId, zkMetadata.getSegmentName());
         }
       }
