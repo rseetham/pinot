@@ -92,6 +92,7 @@ import org.apache.pinot.common.utils.http.HttpClient;
 import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.api.events.MetadataEventNotifierFactory;
 import org.apache.pinot.controller.api.resources.Constants;
+import org.apache.pinot.controller.helix.RealtimeConsumerMonitor;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.PinotTableIdealStateBuilder;
 import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignment;
@@ -224,6 +225,11 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
   private final ExecutorService _deepStoreUploadExecutor;
   private final Set<String> _deepStoreUploadExecutorPendingSegments;
 
+  // Late-bound: set after BaseControllerStarter creates the RealtimeConsumerMonitor (which is constructed after this
+  // manager). Used in computeStartOffset to gate offset auto-reset on a confirmed persistently-rising lag trend.
+  @Nullable
+  private volatile RealtimeConsumerMonitor _realtimeConsumerMonitor;
+
   private volatile boolean _isStopping = false;
 
   public PinotLLCRealtimeSegmentManager(PinotHelixResourceManager helixResourceManager, ControllerConf controllerConf,
@@ -248,6 +254,10 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     _isTmpSegmentAsyncDeletionEnabled = controllerConf.isTmpSegmentAsyncDeletionEnabled();
     _isPartialOfflineReplicaRepairEnabled = controllerConf.isPartialOfflineReplicaRepairEnabled();
     _deepstoreUploadRetryTimeoutMs = controllerConf.getDeepStoreRetryUploadTimeoutMs();
+  }
+
+  public void setRealtimeConsumerMonitor(RealtimeConsumerMonitor realtimeConsumerMonitor) {
+    _realtimeConsumerMonitor = realtimeConsumerMonitor;
   }
 
   public boolean isDeepStoreLLCSegmentUploadRetryEnabled() {
@@ -1079,6 +1089,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       return nextOffset;
     }
     int streamPartitionId = IngestionConfigUtils.getStreamPartitionIdFromPinotPartitionId(partitionId);
+
     String clientId = getTableTopicUniqueClientId(streamConfig);
     StreamConsumerFactory consumerFactory = StreamConsumerFactoryProvider.create(streamConfig);
     StreamPartitionMsgOffsetFactory offsetFactory = consumerFactory.createStreamMsgOffsetFactory();
@@ -1109,13 +1120,15 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       return nextOffset;
     }
     try {
-      if (timeThreshold > 0 && offsetAtSLA != null && offsetAtSLA.compareTo(nextOffsetWithType) > 0) {
+      if (timeThreshold > 0 && offsetAtSLA != null && offsetAtSLA.compareTo(nextOffsetWithType) > 0
+          && isLagTrendConfirmedRising(streamConfig.getTableNameWithType(), streamPartitionId)) {
         LOGGER.info("Auto reset offset from {} to {} on partition {} because time threshold reached", nextOffset,
             latestOffset, streamPartitionId);
         return latestOffset.toString();
       }
       if (offsetThreshold > 0
-          && Long.parseLong(latestOffset.toString()) - Long.parseLong(nextOffset) > offsetThreshold) {
+          && Long.parseLong(latestOffset.toString()) - Long.parseLong(nextOffset) > offsetThreshold
+          && isLagTrendConfirmedRising(streamConfig.getTableNameWithType(), streamPartitionId)) {
         LOGGER.info("Auto reset offset from {} to {} on partition {} because number of offsets threshold reached",
             nextOffset, latestOffset, streamPartitionId);
         return latestOffset.toString();
@@ -1124,6 +1137,22 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       LOGGER.warn("Not able to compare the offsets, skip auto resetting offsets", e);
     }
     return nextOffset;
+  }
+
+  /// Returns true if the lag trend for the given partition is confirmed as persistently rising, or if no
+  /// {@link RealtimeConsumerMonitor} is wired (fail-open for backward compatibility with code paths that construct
+  /// this manager without going through {@link org.apache.pinot.controller.BaseControllerStarter}).
+  private boolean isLagTrendConfirmedRising(String tableNameWithType, int streamPartitionId) {
+    RealtimeConsumerMonitor monitor = _realtimeConsumerMonitor;
+    if (monitor == null) {
+      return true;
+    }
+    boolean rising = monitor.isLagTrendConfirmedRising(tableNameWithType, streamPartitionId);
+    if (!rising) {
+      LOGGER.debug("Lag trend not confirmed as persistently rising for table {} partition {}, skipping offset "
+          + "auto-reset", tableNameWithType, streamPartitionId);
+    }
+    return rising;
   }
 
   @Nullable

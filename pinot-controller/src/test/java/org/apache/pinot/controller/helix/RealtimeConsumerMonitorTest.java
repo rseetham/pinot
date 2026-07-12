@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.controller.helix;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -48,6 +49,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertTrue;
 
 
 public class RealtimeConsumerMonitorTest {
@@ -142,6 +145,156 @@ public class RealtimeConsumerMonitorTest {
         ControllerGauge.MAX_RECORD_AVAILABILITY_LAG_MS), 0);
     assertEquals(MetricValueUtils.getPartitionGaugeValue(controllerMetrics, realtimeTableName, 2,
         ControllerGauge.MAX_RECORD_AVAILABILITY_LAG_MS), 60000);
+  }
+
+  @Test
+  public void lagTrendNotConfirmedOnFlatLagTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    harness.runTicks(60000L, 60000L, 60000L, 60000L, 60000L, 60000L, 60000L, 60000L, 60000L, 60000L);
+    // A flat, non-rising lag signal must never be confirmed as rising, including during EWMA cold-start.
+    assertFalse(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+  }
+
+  @Test
+  public void lagTrendNotConfirmedOnTransientSpikeTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    // One-off spike to 5 minutes of lag (from a 1-minute baseline) that immediately returns to baseline.
+    harness.runTicks(60000L, 60000L, 300000L, 60000L, 60000L, 60000L, 60000L, 60000L);
+    // A single transient spike back to baseline should not be enough to confirm a persistently rising trend.
+    assertFalse(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+  }
+
+  @Test
+  public void lagTrendConfirmedOnSustainedRiseTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    // Lag climbs steadily from a 1-minute baseline to 10 minutes over consecutive ticks, then holds.
+    harness.runTicks(60000L, 60000L, 120000L, 180000L, 240000L, 300000L, 360000L, 420000L, 480000L, 540000L,
+        600000L);
+    // Lag rising steadily and substantially over several consecutive ticks should be confirmed as rising.
+    assertTrue(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+  }
+
+  @Test
+  public void lagTrendRecoversAfterSustainedDropTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    harness.runTicks(60000L, 60000L, 120000L, 180000L, 240000L, 300000L, 360000L, 420000L, 480000L, 540000L,
+        600000L);
+    assertTrue(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+
+    // Sustain the plateau at the peak lag long enough for the slow EWMA (which lagged behind during the steady
+    // rise) to catch back up to the fast EWMA and cross the recovering ratio for several consecutive ticks.
+    long[] plateau = new long[25];
+    Arrays.fill(plateau, 600000L);
+    harness.runTicks(plateau);
+    // Once lag has stabilized (Pinot has caught back up and stopped falling further behind), the confirmed-rising
+    // signal should clear.
+    assertFalse(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+  }
+
+  @Test
+  public void lagTrendUnknownForUnobservedPartitionTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    harness.runTicks(60000L, 60000L);
+    assertFalse(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 42));
+    assertFalse(harness._monitor.isLagTrendConfirmedRising("unknownTable_REALTIME", 1));
+  }
+
+  @Test
+  public void lagTrendNotConfirmedOnNearZeroLagTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    // Lag values below MIN_LAG_FOR_TREND_EVALUATION_MS (30s) — even with a ratio exceeding RISING_RATIO, these
+    // represent trivial jitter that should never trigger an offset auto-reset confirmation.
+    harness.runTicks(100L, 100L, 500L, 1000L, 5000L, 10000L, 20000L, 25000L, 29000L, 29000L);
+    assertFalse(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+  }
+
+  @Test
+  public void lagTrendClearsOnStalenessTest()
+      throws Exception {
+    LagTrendTestHarness harness = new LagTrendTestHarness();
+    // First confirm a rising trend with a genuine sustained rise.
+    harness.runTicks(60000L, 60000L, 120000L, 180000L, 240000L, 300000L, 360000L, 420000L, 480000L, 540000L,
+        600000L);
+    assertTrue(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+
+    // Simulate NOT_CALCULATED: run the monitor with no availability-lag data for the partition. The harness uses
+    // availabilityLagMs = "NOT_CALCULATED" which will be skipped by processTable, leaving the partition un-updated.
+    for (int i = 0; i < 6; i++) {
+      harness.runTickWithNotCalculatedLag();
+    }
+    // After STALENESS_TICKS (5) consecutive ticks with no update, the confirmed-rising signal should clear.
+    assertFalse(harness._monitor.isLagTrendConfirmedRising(REALTIME_TABLE_NAME, 1));
+  }
+
+  private static final String RAW_TABLE_NAME = "lagTrendTable";
+  private static final String REALTIME_TABLE_NAME = TableNameBuilder.REALTIME.tableNameWithType(RAW_TABLE_NAME);
+
+  /**
+   * Bundles a {@link RealtimeConsumerMonitor} with its mocked {@link ConsumingSegmentInfoReader} so tests can drive
+   * a sequence of single-partition availability-lag samples and observe the resulting lag trend confirmation.
+   */
+  private final class LagTrendTestHarness {
+    private final RealtimeConsumerMonitor _monitor;
+    private final ConsumingSegmentInfoReader _consumingSegmentReader;
+
+    private LagTrendTestHarness() throws Exception {
+      TableConfig tableConfig =
+          new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME).setTimeColumnName("timeColumn")
+              .setNumReplicas(1).setStreamConfigs(getStreamConfigMap()).build();
+
+      PinotHelixResourceManager helixResourceManager = mock(PinotHelixResourceManager.class);
+      ZkHelixPropertyStore<ZNRecord> helixPropertyStore = mock(ZkHelixPropertyStore.class);
+      when(helixResourceManager.getTableConfig(REALTIME_TABLE_NAME)).thenReturn(tableConfig);
+      when(helixResourceManager.getPropertyStore()).thenReturn(helixPropertyStore);
+      when(helixResourceManager.getAllTables()).thenReturn(List.of(REALTIME_TABLE_NAME));
+
+      ControllerConf config = mock(ControllerConf.class);
+      when(config.getStatusCheckerFrequencyInSeconds()).thenReturn(300);
+      when(config.getStatusCheckerWaitForPushTimeInSeconds()).thenReturn(300);
+
+      LeadControllerManager leadControllerManager = mock(LeadControllerManager.class);
+      when(leadControllerManager.isLeaderForTable(anyString())).thenReturn(true);
+
+      PinotMetricsRegistry metricsRegistry = PinotMetricUtils.getPinotMetricsRegistry();
+      ControllerMetrics controllerMetrics = new ControllerMetrics(metricsRegistry);
+
+      _consumingSegmentReader = mock(ConsumingSegmentInfoReader.class);
+      _monitor = new RealtimeConsumerMonitor(config, helixResourceManager, leadControllerManager, controllerMetrics,
+          _consumingSegmentReader);
+      _monitor.start();
+    }
+
+    private void runTicks(long... availabilityLagMsValues)
+        throws Exception {
+      for (long availabilityLagMs : availabilityLagMsValues) {
+        ConsumingSegmentInfoReader.ConsumingSegmentInfo consumingSegmentInfo =
+            getConsumingSegmentInfoForServer("pinot1", "1", "100", "100", String.valueOf(availabilityLagMs));
+        TreeMap<String, List<ConsumingSegmentInfoReader.ConsumingSegmentInfo>> response = new TreeMap<>();
+        response.put("segment", List.of(consumingSegmentInfo));
+
+        when(_consumingSegmentReader.getConsumingSegmentsInfo(REALTIME_TABLE_NAME, 10000)).thenReturn(
+            new ConsumingSegmentInfoReader.ConsumingSegmentsInfoMap(response, 0, 0));
+        _monitor.run();
+      }
+    }
+
+    private void runTickWithNotCalculatedLag()
+        throws Exception {
+      ConsumingSegmentInfoReader.ConsumingSegmentInfo consumingSegmentInfo =
+          getConsumingSegmentInfoForServer("pinot1", "1", "100", "100", "NOT_CALCULATED");
+      TreeMap<String, List<ConsumingSegmentInfoReader.ConsumingSegmentInfo>> response = new TreeMap<>();
+      response.put("segment", List.of(consumingSegmentInfo));
+
+      when(_consumingSegmentReader.getConsumingSegmentsInfo(REALTIME_TABLE_NAME, 10000)).thenReturn(
+          new ConsumingSegmentInfoReader.ConsumingSegmentsInfoMap(response, 0, 0));
+      _monitor.run();
+    }
   }
 
   ConsumingSegmentInfoReader.ConsumingSegmentInfo getConsumingSegmentInfoForServer(String serverName,

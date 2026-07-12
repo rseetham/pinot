@@ -1099,6 +1099,7 @@ public abstract class BaseControllerStarter implements ServiceStartable {
         new RealtimeConsumerMonitor(_config, _helixResourceManager, _leadControllerManager, _controllerMetrics,
             _executorService);
     periodicTasks.add(_realtimeConsumerMonitor);
+    _pinotLLCRealtimeSegmentManager.setRealtimeConsumerMonitor(_realtimeConsumerMonitor);
     _segmentRelocator =
         new SegmentRelocator(_tableRebalanceManager, _helixResourceManager, _leadControllerManager, _config,
             _controllerMetrics, _executorService, _connectionManager);
