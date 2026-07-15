@@ -2052,11 +2052,12 @@ public class PinotLLCRealtimeSegmentManagerTest {
     }
 
     // Build latestSegmentZKMetadataMap from the fake ZK metadata (same logic as getLatestSegmentZKMetadataMap)
-    Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
+    Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
     for (Map.Entry<String, SegmentZKMetadata> entry : segmentManager._segmentZKMetadataMap.entrySet()) {
       LLCSegmentName llcSegmentName = new LLCSegmentName(entry.getKey());
-      int partitionId = llcSegmentName.getPartitionGroupId();
-      latestSegmentZKMetadataMap.merge(partitionId, entry.getValue(), (existing, candidate) -> {
+      TopicPartitionId topicPartitionId =
+          new TopicPartitionId(llcSegmentName.getTopicId(false), llcSegmentName.getStreamPartitionGroupId(false));
+      latestSegmentZKMetadataMap.merge(topicPartitionId, entry.getValue(), (existing, candidate) -> {
         int existingSeq = new LLCSegmentName(existing.getSegmentName()).getSequenceNumber();
         int candidateSeq = new LLCSegmentName(candidate.getSegmentName()).getSequenceNumber();
         return candidateSeq > existingSeq ? candidate : existing;
@@ -2069,7 +2070,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
             segmentManager._streamConfigs);
     List<PartitionGroupConsumptionStatus> fromZKMetadata =
         segmentManager.buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap,
-            segmentManager._streamConfigs);
+            segmentManager._streamConfigs, false);
 
     // Sort both by partition group id for comparison
     fromIdealState.sort(Comparator.comparingInt(PartitionGroupConsumptionStatus::getPartitionGroupId));
@@ -2125,7 +2126,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     int topic1PartitionGroupId = IngestionConfigUtils.getPinotPartitionIdFromStreamPartitionId(2, 1);
 
     IdealState idealState = new IdealState(REALTIME_TABLE_NAME);
-    Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
+    Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
     for (int partitionGroupId : new int[]{topic0PartitionGroupId, topic1PartitionGroupId}) {
       String segmentName =
           new LLCSegmentName(RAW_TABLE_NAME, partitionGroupId, 0, CURRENT_TIME_MS).getSegmentName();
@@ -2133,14 +2134,18 @@ public class PinotLLCRealtimeSegmentManagerTest {
       segmentZKMetadata.setStatus(Status.IN_PROGRESS);
       segmentZKMetadata.setStartOffset(new LongMsgOffset(0).toString());
       segmentManager._segmentZKMetadataMap.put(segmentName, segmentZKMetadata);
-      latestSegmentZKMetadataMap.put(partitionGroupId, segmentZKMetadata);
+      LLCSegmentName llcSegmentName = new LLCSegmentName(segmentName);
+      latestSegmentZKMetadataMap.put(
+          new TopicPartitionId(llcSegmentName.getTopicId(true), llcSegmentName.getStreamPartitionGroupId(true)),
+          segmentZKMetadata);
       idealState.getRecord().setMapField(segmentName, Map.of("server0", SegmentStateModel.CONSUMING));
     }
 
     List<PartitionGroupConsumptionStatus> fromIdealState =
         segmentManager.getPartitionGroupConsumptionStatusList(idealState, streamConfigs);
     List<PartitionGroupConsumptionStatus> fromZKMetadata =
-        segmentManager.buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs);
+        segmentManager.buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs,
+            true);
 
     for (List<PartitionGroupConsumptionStatus> statusList : List.of(fromIdealState, fromZKMetadata)) {
       Map<Integer, PartitionGroupConsumptionStatus> byPartitionGroupId = new HashMap<>();
@@ -2187,7 +2192,7 @@ public class PinotLLCRealtimeSegmentManagerTest {
     int streamPartitionId1 = 2;
 
     IdealState idealState = new IdealState(REALTIME_TABLE_NAME);
-    Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
+    Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
     for (int[] topicAndPartition : new int[][]{{topicId0, streamPartitionId0}, {topicId1, streamPartitionId1}}) {
       // Round-trip through the segment name string, since only the string-parsing constructor sets
       // isMultiTopicFormat=true.
@@ -2200,14 +2205,17 @@ public class PinotLLCRealtimeSegmentManagerTest {
       segmentZKMetadata.setStatus(Status.IN_PROGRESS);
       segmentZKMetadata.setStartOffset(new LongMsgOffset(0).toString());
       segmentManager._segmentZKMetadataMap.put(segmentNameStr, segmentZKMetadata);
-      latestSegmentZKMetadataMap.put(llcSegmentName.getPartitionGroupId(), segmentZKMetadata);
+      latestSegmentZKMetadataMap.put(
+          new TopicPartitionId(llcSegmentName.getTopicId(true), llcSegmentName.getStreamPartitionGroupId(true)),
+          segmentZKMetadata);
       idealState.getRecord().setMapField(segmentNameStr, Map.of("server0", SegmentStateModel.CONSUMING));
     }
 
     List<PartitionGroupConsumptionStatus> fromIdealState =
         segmentManager.getPartitionGroupConsumptionStatusList(idealState, streamConfigs);
     List<PartitionGroupConsumptionStatus> fromZKMetadata =
-        segmentManager.buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs);
+        segmentManager.buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs,
+            true);
 
     for (List<PartitionGroupConsumptionStatus> statusList : List.of(fromIdealState, fromZKMetadata)) {
       Map<Integer, PartitionGroupConsumptionStatus> byStreamPartitionId = new HashMap<>();
@@ -2219,6 +2227,68 @@ public class PinotLLCRealtimeSegmentManagerTest {
       assertEquals(byStreamPartitionId.get(streamPartitionId1).getTopicId(), topicId1,
           "Expected topicId " + topicId1 + " for stream partition " + streamPartitionId1);
     }
+  }
+
+  /**
+   * Verifies that {@code getLatestSegmentZKMetadataMap} and {@code buildPartitionGroupConsumptionStatusFromZKMetadata}
+   * do not conflate partitions from different topics that happen to share the same raw (unpadded) stream partition
+   * id, since {@code latestSegmentZKMetadataMap} is keyed by {@link TopicPartitionId} rather than raw partition id.
+   *
+   * <p>NOTE: this only exercises {@code getLatestSegmentZKMetadataMap} and
+   * {@code buildPartitionGroupConsumptionStatusFromZKMetadata}, not
+   * {@code getPartitionGroupConsumptionStatusList} (the IdealState-scanning path), which has a separate,
+   * pre-existing bug: it dedups by raw {@code llcSegmentName.getPartitionGroupId()} and so still conflates
+   * same-raw-partition-id segments across topics for multi-topic-format segment names. That is out of scope here.
+   */
+  @Test
+  public void testPartitionGroupConsumptionStatusMultiStreamSameRawPartitionIdAcrossTopics() {
+    FakePinotLLCRealtimeSegmentManager segmentManager = new FakePinotLLCRealtimeSegmentManager();
+    Map<String, String> streamConfigMap = FakeStreamConfigUtils.getDefaultLowLevelStreamConfigs().getStreamConfigsMap();
+    IngestionConfig ingestionConfig = new IngestionConfig();
+    ingestionConfig.setStreamIngestionConfig(
+        new StreamIngestionConfig(Arrays.asList(streamConfigMap, streamConfigMap)));
+    TableConfig multiStreamTableConfig =
+        new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME).setIngestionConfig(ingestionConfig)
+            .build();
+    List<StreamConfig> streamConfigs = IngestionConfigUtils.getStreamConfigs(multiStreamTableConfig);
+
+    // Both topics use the same raw stream partition id (0), which would collide if getLatestSegmentZKMetadataMap
+    // stored raw partition ids as plain Integer keys instead of TopicPartitionId(topicId, partitionId).
+    int topicId0 = 0;
+    int topicId1 = 1;
+    int sharedStreamPartitionId = 0;
+
+    for (int topicId : new int[]{topicId0, topicId1}) {
+      String segmentNameStr =
+          new LLCSegmentName(RAW_TABLE_NAME, topicId, sharedStreamPartitionId, 0, CURRENT_TIME_MS).getSegmentName();
+      Assert.assertTrue(new LLCSegmentName(segmentNameStr).isMultiTopicFormat());
+      SegmentZKMetadata segmentZKMetadata = new SegmentZKMetadata(segmentNameStr);
+      segmentZKMetadata.setStatus(Status.IN_PROGRESS);
+      segmentZKMetadata.setStartOffset(new LongMsgOffset(0).toString());
+      segmentManager._segmentZKMetadataMap.put(segmentNameStr, segmentZKMetadata);
+    }
+
+    // getLatestSegmentZKMetadataMap parses the raw ZK segment names (via getLLCSegments, overridden by the fake to
+    // return _segmentZKMetadataMap.keySet()) and is the method that originally collided when keyed by raw partition
+    // id instead of TopicPartitionId.
+    Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap =
+        segmentManager.getLatestSegmentZKMetadataMap(REALTIME_TABLE_NAME, true);
+    assertEquals(latestSegmentZKMetadataMap.size(), 2,
+        "Expected both topics' partitions to be retained as distinct entries");
+
+    List<PartitionGroupConsumptionStatus> fromZKMetadata =
+        segmentManager.buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs,
+            true);
+
+    assertEquals(fromZKMetadata.size(), 2, "Expected one status per topic, not merged/overwritten");
+    Map<Integer, PartitionGroupConsumptionStatus> byTopicId = new HashMap<>();
+    for (PartitionGroupConsumptionStatus status : fromZKMetadata) {
+      byTopicId.put(status.getTopicId(), status);
+    }
+    assertEquals(byTopicId.get(topicId0).getStreamPartitionGroupId(), sharedStreamPartitionId,
+        "Expected shared stream partition id for topic " + topicId0);
+    assertEquals(byTopicId.get(topicId1).getStreamPartitionGroupId(), sharedStreamPartitionId,
+        "Expected shared stream partition id for topic " + topicId1);
   }
 
   @Test

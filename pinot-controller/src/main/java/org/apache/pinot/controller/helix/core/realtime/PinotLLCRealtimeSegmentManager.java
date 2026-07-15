@@ -1429,15 +1429,20 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
    * Returns the latest LLC realtime segment ZK metadata for each partition.
    *
    * @param realtimeTableName Realtime table name
-   * @return Map from partition group id to the latest LLC realtime segment ZK metadata
+   * @param isMultiTopic Whether the table is configured with multiple topics/stream configs
+   * @return Map from (topicId, partition group id) to the latest LLC realtime segment ZK metadata
    */
-  private Map<Integer, SegmentZKMetadata> getLatestSegmentZKMetadataMap(String realtimeTableName) {
+  @VisibleForTesting
+  Map<TopicPartitionId, SegmentZKMetadata> getLatestSegmentZKMetadataMap(String realtimeTableName,
+      boolean isMultiTopic) {
     List<String> segments = getLLCSegments(realtimeTableName);
 
-    Map<Integer, LLCSegmentName> latestLLCSegmentNameMap = new HashMap<>();
+    Map<TopicPartitionId, LLCSegmentName> latestLLCSegmentNameMap = new HashMap<>();
     for (String segmentName : segments) {
       LLCSegmentName llcSegmentName = new LLCSegmentName(segmentName);
-      latestLLCSegmentNameMap.compute(llcSegmentName.getPartitionGroupId(), (partitionId, latestLLCSegmentName) -> {
+      TopicPartitionId topicPartitionId = new TopicPartitionId(llcSegmentName.getTopicId(isMultiTopic),
+          llcSegmentName.getStreamPartitionGroupId(isMultiTopic));
+      latestLLCSegmentNameMap.compute(topicPartitionId, (partitionId, latestLLCSegmentName) -> {
         if (latestLLCSegmentName == null) {
           return llcSegmentName;
         } else {
@@ -1450,8 +1455,8 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       });
     }
 
-    Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
-    for (Map.Entry<Integer, LLCSegmentName> entry : latestLLCSegmentNameMap.entrySet()) {
+    Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap = new HashMap<>();
+    for (Map.Entry<TopicPartitionId, LLCSegmentName> entry : latestLLCSegmentNameMap.entrySet()) {
       SegmentZKMetadata latestSegmentZKMetadata =
           getSegmentZKMetadata(realtimeTableName, entry.getValue().getSegmentName());
       latestSegmentZKMetadataMap.put(entry.getKey(), latestSegmentZKMetadata);
@@ -1788,18 +1793,22 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         StreamConsumerFactoryProvider.create(streamConfigs.get(0)).createStreamMsgOffsetFactory();
 
     // Get the latest segment ZK metadata for each partition
-    Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap = getLatestSegmentZKMetadataMap(realtimeTableName);
+    Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap =
+        getLatestSegmentZKMetadataMap(realtimeTableName, isMultiTopic);
 
-    // Create a map from partition id to start offset
+    // Create a map from (topicId, partition id) to start offset
     // TODO: Directly return map from StreamMetadataProvider
-    Map<Integer, StreamPartitionMsgOffset> partitionIdToStartOffset = Maps.newHashMapWithExpectedSize(numPartitions);
-    for (StreamMetadata streamMetadata : streamMetadataList) {
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionIdToStartOffset =
+        Maps.newHashMapWithExpectedSize(numPartitions);
+    for (int topicId = 0; topicId < streamMetadataList.size(); topicId++) {
+      StreamMetadata streamMetadata = streamMetadataList.get(topicId);
       for (PartitionGroupMetadata metadata : streamMetadata.getPartitionGroupMetadataList()) {
-        partitionIdToStartOffset.put(metadata.getPartitionGroupId(), metadata.getStartOffset());
+        partitionIdToStartOffset.put(new TopicPartitionId(topicId, metadata.getPartitionGroupId()),
+            metadata.getStartOffset());
       }
     }
-    // Create a map from partition id to the smallest stream offset
-    Map<Integer, StreamPartitionMsgOffset> partitionIdToSmallestOffset = null;
+    // Create a map from (topicId, partition id) to the smallest stream offset
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionIdToSmallestOffset = null;
     if (offsetCriteria != null && offsetCriteria.equals(OffsetCriteria.SMALLEST_OFFSET_CRITERIA)) {
       partitionIdToSmallestOffset = partitionIdToStartOffset;
     }
@@ -1831,8 +1840,9 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     Status statusPostSegmentMetadataUpdate =
         PauselessConsumptionUtils.isPauselessEnabled(tableConfig) ? Status.COMMITTING : Status.DONE;
 
-    for (Map.Entry<Integer, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
-      int partitionId = entry.getKey();
+    for (Map.Entry<TopicPartitionId, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
+      TopicPartitionId topicPartitionId = entry.getKey();
+      int partitionId = topicPartitionId.streamPartitionId();
       SegmentZKMetadata latestSegmentZKMetadata = entry.getValue();
       String latestSegmentName = latestSegmentZKMetadata.getSegmentName();
       LLCSegmentName latestLLCSegmentName = new LLCSegmentName(latestSegmentName);
@@ -1851,7 +1861,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
             if (!isExceededMaxSegmentCompletionTime(realtimeTableName, latestSegmentName, currentTimeMs)) {
               continue;
             }
-            if (partitionIdToStartOffset.containsKey(partitionId)) {
+            if (partitionIdToStartOffset.containsKey(topicPartitionId)) {
               LOGGER.info("Repairing segment: {} which is {} in segment ZK metadata, but is CONSUMING in IdealState",
                   latestSegmentName, statusPostSegmentMetadataUpdate);
 
@@ -1868,7 +1878,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
                   segmentAssignment, instancePartitionsMap);
             } else { // partition group reached end of life
               LOGGER.info("PartitionGroup: {} has reached end of life. Updating ideal state for segment: {}. "
-                      + "Skipping creation of new ZK metadata and new segment in ideal state", partitionId,
+                      + "Skipping creation of new ZK metadata and new segment in ideal state", topicPartitionId,
                   latestSegmentName);
               updateInstanceStatesForNewConsumingSegment(instanceStatesMap, latestSegmentName, null, segmentAssignment,
                   instancePartitionsMap);
@@ -1918,30 +1928,32 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
           // Smallest offset is fetched from stream once and cached in partitionIdToSmallestOffset.
           if (partitionIdToSmallestOffset == null) {
             partitionIdToSmallestOffset =
-                fetchPartitionGroupIdToSmallestOffset(streamConfigs, idealState, latestSegmentZKMetadataMap);
+                fetchPartitionGroupIdToSmallestOffset(streamConfigs, idealState, latestSegmentZKMetadataMap,
+                    isMultiTopic);
           }
 
           // Do not create new CONSUMING segment when the stream partition has reached end of life.
-          if (!partitionIdToSmallestOffset.containsKey(partitionId)) {
-            LOGGER.info("PartitionGroup: {} has reached end of life. Skipping creation of new segment {}", partitionId,
-                latestSegmentName);
+          if (!partitionIdToSmallestOffset.containsKey(topicPartitionId)) {
+            LOGGER.info("PartitionGroup: {} has reached end of life. Skipping creation of new segment {}",
+                topicPartitionId, latestSegmentName);
             continue;
           }
 
           if (allInstancesOffline) {
             LOGGER.info("Repairing segment: {} which is OFFLINE for all instances in IdealState", latestSegmentName);
             StreamPartitionMsgOffset startOffset =
-                selectStartOffset(offsetCriteria, partitionId, partitionIdToStartOffset, partitionIdToSmallestOffset,
-                    tableConfig.getTableName(), offsetFactory,
+                selectStartOffset(offsetCriteria, topicPartitionId, partitionIdToStartOffset,
+                    partitionIdToSmallestOffset, tableConfig.getTableName(), offsetFactory,
                     latestSegmentZKMetadata.getStartOffset()); // segments are OFFLINE; start from beginning
             createNewConsumingSegment(tableConfig, streamConfigs.get(streamConfigIdx), latestSegmentZKMetadata,
                 currentTimeMs, numPartitions, instancePartitions, instanceStatesMap, segmentAssignment,
                 instancePartitionsMap, startOffset, isMultiTopic);
           } else {
-            LOGGER.info("Resuming consumption for partition: {} of table: {}", partitionId, realtimeTableName);
+            LOGGER.info("Resuming consumption for partition: {} of table: {}", topicPartitionId, realtimeTableName);
             StreamPartitionMsgOffset startOffset =
-                selectStartOffset(offsetCriteria, partitionId, partitionIdToStartOffset, partitionIdToSmallestOffset,
-                    tableConfig.getTableName(), offsetFactory, latestSegmentZKMetadata.getEndOffset());
+                selectStartOffset(offsetCriteria, topicPartitionId, partitionIdToStartOffset,
+                    partitionIdToSmallestOffset, tableConfig.getTableName(), offsetFactory,
+                    latestSegmentZKMetadata.getEndOffset());
             createNewConsumingSegment(tableConfig, streamConfigs.get(streamConfigIdx), latestSegmentZKMetadata,
                 currentTimeMs, numPartitions, instancePartitions, instanceStatesMap, segmentAssignment,
                 instancePartitionsMap, startOffset, isMultiTopic);
@@ -1963,8 +1975,10 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
           // Find the previous CONSUMING segment
           String previousConsumingSegment = null;
           for (Map.Entry<String, Map<String, String>> segmentEntry : instanceStatesMap.entrySet()) {
+            LLCSegmentName candidateLLCSegmentName = new LLCSegmentName(segmentEntry.getKey());
             if (segmentEntry.getValue().containsValue(SegmentStateModel.CONSUMING)
-                && new LLCSegmentName(segmentEntry.getKey()).getPartitionGroupId() == partitionId) {
+                && candidateLLCSegmentName.getTopicId(isMultiTopic) == topicPartitionId.topicId()
+                && candidateLLCSegmentName.getStreamPartitionGroupId(isMultiTopic) == partitionId) {
               previousConsumingSegment = segmentEntry.getKey();
               break;
             }
@@ -1972,7 +1986,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
           if (previousConsumingSegment == null) {
             LOGGER.error(
                 "Failed to find previous CONSUMING segment for partition: {} of table: {}, potential data loss",
-                partitionId, realtimeTableName);
+                topicPartitionId, realtimeTableName);
             _controllerMetrics.addMeteredTableValue(realtimeTableName, ControllerMeter.LLC_STREAM_DATA_LOSS, 1L);
           }
           updateInstanceStatesForNewConsumingSegment(instanceStatesMap, previousConsumingSegment, latestSegmentName,
@@ -1989,7 +2003,7 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       StreamMetadata streamMetadata = streamMetadataList.get(topicId);
       for (PartitionGroupMetadata partitionGroupMetadata : streamMetadata.getPartitionGroupMetadataList()) {
         int partitionId = partitionGroupMetadata.getPartitionGroupId();
-        if (!latestSegmentZKMetadataMap.containsKey(partitionId)) {
+        if (!latestSegmentZKMetadataMap.containsKey(new TopicPartitionId(topicId, partitionId))) {
           String newSegmentName =
               setupNewPartitionGroup(tableConfig, streamMetadata.getStreamConfig(), partitionGroupMetadata,
                   currentTimeMs, instancePartitions, numPartitions, numReplicas, topicId, isMultiTopic);
@@ -2020,13 +2034,14 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
         instancePartitionsMap);
   }
 
-  private Map<Integer, StreamPartitionMsgOffset> fetchPartitionGroupIdToSmallestOffset(List<StreamConfig> streamConfigs,
-      IdealState idealState, Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap) {
+  private Map<TopicPartitionId, StreamPartitionMsgOffset> fetchPartitionGroupIdToSmallestOffset(
+      List<StreamConfig> streamConfigs, IdealState idealState,
+      Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap, boolean isMultiTopic) {
     // Build consumption status from pre-computed ZK metadata map instead of rescanning IdealState (O(1) vs O(N))
     List<PartitionGroupConsumptionStatus> currentPartitionGroupConsumptionStatusList =
-        buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs);
+        buildPartitionGroupConsumptionStatusFromZKMetadata(latestSegmentZKMetadataMap, streamConfigs, isMultiTopic);
 
-    Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToSmallestOffset = new HashMap<>();
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToSmallestOffset = new HashMap<>();
     for (StreamConfig streamConfig : streamConfigs) {
       OffsetCriteria originalOffsetCriteria = streamConfig.getOffsetCriteria();
       streamConfig.setOffsetCriteria(OffsetCriteria.SMALLEST_OFFSET_CRITERIA);
@@ -2038,9 +2053,11 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       List<StreamMetadata> streamMetadataList = getNewStreamMetadataList(
           streamConfigs, currentPartitionGroupConsumptionStatusList, idealState, true);
       streamConfig.setOffsetCriteria(originalOffsetCriteria);
-      for (StreamMetadata streamMetadata : streamMetadataList) {
+      for (int topicId = 0; topicId < streamMetadataList.size(); topicId++) {
+        StreamMetadata streamMetadata = streamMetadataList.get(topicId);
         for (PartitionGroupMetadata metadata : streamMetadata.getPartitionGroupMetadataList()) {
-          partitionGroupIdToSmallestOffset.put(metadata.getPartitionGroupId(), metadata.getStartOffset());
+          partitionGroupIdToSmallestOffset.put(new TopicPartitionId(topicId, metadata.getPartitionGroupId()),
+              metadata.getStartOffset());
         }
       }
     }
@@ -2053,16 +2070,17 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
    */
   @VisibleForTesting
   List<PartitionGroupConsumptionStatus> buildPartitionGroupConsumptionStatusFromZKMetadata(
-      Map<Integer, SegmentZKMetadata> latestSegmentZKMetadataMap, List<StreamConfig> streamConfigs) {
+      Map<TopicPartitionId, SegmentZKMetadata> latestSegmentZKMetadataMap, List<StreamConfig> streamConfigs,
+      boolean isMultiTopic) {
     List<PartitionGroupConsumptionStatus> result = new ArrayList<>(latestSegmentZKMetadataMap.size());
     int numStreams = streamConfigs.size();
     if (numStreams == 1) {
       StreamPartitionMsgOffsetFactory offsetFactory =
           StreamConsumerFactoryProvider.create(streamConfigs.get(0)).createStreamMsgOffsetFactory();
-      for (Map.Entry<Integer, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
-        int partitionGroupId = entry.getKey();
+      for (Map.Entry<TopicPartitionId, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
         SegmentZKMetadata zkMetadata = entry.getValue();
         LLCSegmentName llcSegmentName = new LLCSegmentName(zkMetadata.getSegmentName());
+        int partitionGroupId = llcSegmentName.getPartitionGroupId();
         result.add(new PartitionGroupConsumptionStatus(partitionGroupId, partitionGroupId, 0,
             llcSegmentName.getSequenceNumber(),
             offsetFactory.create(zkMetadata.getStartOffset()),
@@ -2071,12 +2089,12 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
       }
     } else {
       StreamPartitionMsgOffsetFactory[] offsetFactories = new StreamPartitionMsgOffsetFactory[numStreams];
-      for (Map.Entry<Integer, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
-        int partitionGroupId = entry.getKey();
+      for (Map.Entry<TopicPartitionId, SegmentZKMetadata> entry : latestSegmentZKMetadataMap.entrySet()) {
         SegmentZKMetadata zkMetadata = entry.getValue();
         LLCSegmentName llcSegmentName = new LLCSegmentName(zkMetadata.getSegmentName());
-        int topicId = llcSegmentName.getTopicId(true);
-        int streamPartitionId = llcSegmentName.getStreamPartitionGroupId(true);
+        int partitionGroupId = llcSegmentName.getPartitionGroupId();
+        int topicId = llcSegmentName.getTopicId(isMultiTopic);
+        int streamPartitionId = llcSegmentName.getStreamPartitionGroupId(isMultiTopic);
         StreamPartitionMsgOffsetFactory offsetFactory = offsetFactories[topicId];
         if (offsetFactory == null) {
           offsetFactory =
@@ -2093,21 +2111,22 @@ public class PinotLLCRealtimeSegmentManager implements PinotClusterConfigChangeL
     return result;
   }
 
-  private StreamPartitionMsgOffset selectStartOffset(OffsetCriteria offsetCriteria, int partitionGroupId,
-      Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToStartOffset,
-      Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToSmallestStreamOffset, String tableName,
+  private StreamPartitionMsgOffset selectStartOffset(OffsetCriteria offsetCriteria,
+      TopicPartitionId topicPartitionId,
+      Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToStartOffset,
+      Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToSmallestStreamOffset, String tableName,
       StreamPartitionMsgOffsetFactory offsetFactory, String startOffsetInSegmentZkMetadataStr) {
     if (offsetCriteria != null) {
       // use the fetched offset according to offset criteria
-      return partitionGroupIdToStartOffset.get(partitionGroupId);
+      return partitionGroupIdToStartOffset.get(topicPartitionId);
     } else {
       // use offset from segment ZK metadata
       StreamPartitionMsgOffset startOffsetInSegmentZkMetadata = offsetFactory.create(startOffsetInSegmentZkMetadataStr);
-      StreamPartitionMsgOffset streamSmallestOffset = partitionGroupIdToSmallestStreamOffset.get(partitionGroupId);
+      StreamPartitionMsgOffset streamSmallestOffset = partitionGroupIdToSmallestStreamOffset.get(topicPartitionId);
       // Start offset in ZK must be higher than the start offset of the stream
       if (streamSmallestOffset.compareTo(startOffsetInSegmentZkMetadata) > 0) {
         LOGGER.error("Data lost from offset: {} to: {} for partition: {} of table: {}", startOffsetInSegmentZkMetadata,
-            streamSmallestOffset, partitionGroupId, tableName);
+            streamSmallestOffset, topicPartitionId, tableName);
         _controllerMetrics.addMeteredTableValue(tableName, ControllerMeter.LLC_STREAM_DATA_LOSS, 1L);
         return streamSmallestOffset;
       }
