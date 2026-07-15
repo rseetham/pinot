@@ -63,8 +63,9 @@ public class MissingConsumingSegmentFinder {
 
   private final String _realtimeTableName;
   private final SegmentMetadataFetcher _segmentMetadataFetcher;
-  private final Map<Integer, StreamPartitionMsgOffset> _partitionGroupIdToLargestStreamOffsetMap;
+  private final Map<TopicPartitionId, StreamPartitionMsgOffset> _partitionGroupIdToLargestStreamOffsetMap;
   private final StreamPartitionMsgOffsetFactory _streamPartitionMsgOffsetFactory;
+  private final boolean _isMultiTopic;
 
   private ControllerMetrics _controllerMetrics;
 
@@ -75,6 +76,7 @@ public class MissingConsumingSegmentFinder {
     _segmentMetadataFetcher = new SegmentMetadataFetcher(propertyStore, controllerMetrics);
     _streamPartitionMsgOffsetFactory =
         StreamConsumerFactoryProvider.create(streamConfigs.get(0)).createStreamMsgOffsetFactory();
+    _isMultiTopic = streamConfigs.size() > 1;
 
     // create partition group id to largest stream offset map
     _partitionGroupIdToLargestStreamOffsetMap = new HashMap<>();
@@ -88,7 +90,9 @@ public class MissingConsumingSegmentFinder {
               pauseState == null ? new ArrayList<>() : pauseState.getIndexOfInactiveTopics(), false)
           .forEach(streamMetadata -> {
             for (PartitionGroupMetadata metadata : streamMetadata.getPartitionGroupMetadataList()) {
-              _partitionGroupIdToLargestStreamOffsetMap.put(metadata.getPartitionGroupId(), metadata.getStartOffset());
+              _partitionGroupIdToLargestStreamOffsetMap.put(
+                  new TopicPartitionId(metadata.getTopicId(), metadata.getPartitionGroupId()),
+                  metadata.getStartOffset());
             }
           });
     } catch (Exception e) {
@@ -101,12 +105,21 @@ public class MissingConsumingSegmentFinder {
 
   @VisibleForTesting
   MissingConsumingSegmentFinder(String realtimeTableName, SegmentMetadataFetcher segmentMetadataFetcher,
-      Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap,
+      Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap,
       StreamPartitionMsgOffsetFactory streamPartitionMsgOffsetFactory) {
+    this(realtimeTableName, segmentMetadataFetcher, partitionGroupIdToLargestStreamOffsetMap,
+        streamPartitionMsgOffsetFactory, false);
+  }
+
+  @VisibleForTesting
+  MissingConsumingSegmentFinder(String realtimeTableName, SegmentMetadataFetcher segmentMetadataFetcher,
+      Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap,
+      StreamPartitionMsgOffsetFactory streamPartitionMsgOffsetFactory, boolean isMultiTopic) {
     _realtimeTableName = realtimeTableName;
     _segmentMetadataFetcher = segmentMetadataFetcher;
     _partitionGroupIdToLargestStreamOffsetMap = partitionGroupIdToLargestStreamOffsetMap;
     _streamPartitionMsgOffsetFactory = streamPartitionMsgOffsetFactory;
+    _isMultiTopic = isMultiTopic;
   }
 
   public void findAndEmitMetrics(IdealState idealState) {
@@ -124,8 +137,8 @@ public class MissingConsumingSegmentFinder {
   @VisibleForTesting
   MissingSegmentInfo findMissingSegments(Map<String, Map<String, String>> idealStateMap, Instant now) {
     // create the maps
-    Map<Integer, LLCSegmentName> partitionGroupIdToLatestConsumingSegmentMap = new HashMap<>();
-    Map<Integer, LLCSegmentName> partitionGroupIdToLatestCompletedSegmentMap = new HashMap<>();
+    Map<TopicPartitionId, LLCSegmentName> partitionGroupIdToLatestConsumingSegmentMap = new HashMap<>();
+    Map<TopicPartitionId, LLCSegmentName> partitionGroupIdToLatestCompletedSegmentMap = new HashMap<>();
     idealStateMap.forEach((segmentName, instanceToStatusMap) -> {
       LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
       if (llcSegmentName != null) { // Skip the uploaded realtime segments that don't conform to llc naming
@@ -139,9 +152,9 @@ public class MissingConsumingSegmentFinder {
 
     MissingSegmentInfo missingSegmentInfo = new MissingSegmentInfo();
     if (!_partitionGroupIdToLargestStreamOffsetMap.isEmpty()) {
-      _partitionGroupIdToLargestStreamOffsetMap.forEach((partitionGroupId, largestStreamOffset) -> {
-        if (!partitionGroupIdToLatestConsumingSegmentMap.containsKey(partitionGroupId)) {
-          LLCSegmentName latestCompletedSegment = partitionGroupIdToLatestCompletedSegmentMap.get(partitionGroupId);
+      _partitionGroupIdToLargestStreamOffsetMap.forEach((topicPartitionId, largestStreamOffset) -> {
+        if (!partitionGroupIdToLatestConsumingSegmentMap.containsKey(topicPartitionId)) {
+          LLCSegmentName latestCompletedSegment = partitionGroupIdToLatestCompletedSegmentMap.get(topicPartitionId);
           if (latestCompletedSegment == null) {
             // There's no consuming or completed segment for this partition group. Possibilities:
             //   1) it's a new partition group that has not yet been detected
@@ -158,37 +171,38 @@ public class MissingConsumingSegmentFinder {
             if (completedSegmentEndOffset.compareTo(largestStreamOffset) < 0) {
               // there are unconsumed messages available on the stream
               missingSegmentInfo._totalCount++;
-              updateMaxDurationInfo(missingSegmentInfo, partitionGroupId, segmentZKMetadata.getCreationTime(), now);
+              updateMaxDurationInfo(missingSegmentInfo, topicPartitionId, segmentZKMetadata.getCreationTime(), now);
             }
           }
         }
       });
     } else {
-      partitionGroupIdToLatestCompletedSegmentMap.forEach((partitionGroupId, latestCompletedSegment) -> {
-        if (!partitionGroupIdToLatestConsumingSegmentMap.containsKey(partitionGroupId)) {
+      partitionGroupIdToLatestCompletedSegmentMap.forEach((topicPartitionId, latestCompletedSegment) -> {
+        if (!partitionGroupIdToLatestConsumingSegmentMap.containsKey(topicPartitionId)) {
           missingSegmentInfo._totalCount++;
           long segmentCompletionTimeMillis = _segmentMetadataFetcher
               .fetchSegmentCompletionTime(_realtimeTableName, latestCompletedSegment.getSegmentName());
-          updateMaxDurationInfo(missingSegmentInfo, partitionGroupId, segmentCompletionTimeMillis, now);
+          updateMaxDurationInfo(missingSegmentInfo, topicPartitionId, segmentCompletionTimeMillis, now);
         }
       });
     }
     return missingSegmentInfo;
   }
 
-  private void updateMaxDurationInfo(MissingSegmentInfo missingSegmentInfo, Integer partitionGroupId,
+  private void updateMaxDurationInfo(MissingSegmentInfo missingSegmentInfo, TopicPartitionId topicPartitionId,
       long segmentCompletionTimeMillis, Instant now) {
     long duration = Duration.between(Instant.ofEpochMilli(segmentCompletionTimeMillis), now).toMinutes();
     if (duration > missingSegmentInfo._maxDurationInMinutes) {
       missingSegmentInfo._maxDurationInMinutes = duration;
     }
-    LOGGER.warn("PartitionGroupId {} hasn't had a consuming segment for {} minutes!", partitionGroupId, duration);
+    LOGGER.warn("TopicPartitionId {} hasn't had a consuming segment for {} minutes!", topicPartitionId, duration);
   }
 
-  private void updateMap(Map<Integer, LLCSegmentName> partitionGroupIdToLatestSegmentMap,
+  private void updateMap(Map<TopicPartitionId, LLCSegmentName> partitionGroupIdToLatestSegmentMap,
       LLCSegmentName llcSegmentName) {
-    int partitionGroupId = llcSegmentName.getPartitionGroupId();
-    partitionGroupIdToLatestSegmentMap.compute(partitionGroupId, (pid, existingSegment) -> {
+    TopicPartitionId topicPartitionId = new TopicPartitionId(llcSegmentName.getTopicId(_isMultiTopic),
+        llcSegmentName.getStreamPartitionGroupId(_isMultiTopic));
+    partitionGroupIdToLatestSegmentMap.compute(topicPartitionId, (pid, existingSegment) -> {
       if (existingSegment == null) {
         return llcSegmentName;
       } else {

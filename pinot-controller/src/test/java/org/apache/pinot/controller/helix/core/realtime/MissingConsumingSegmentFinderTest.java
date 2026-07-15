@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
+import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.spi.stream.LongMsgOffset;
 import org.apache.pinot.spi.stream.LongMsgOffsetFactory;
 import org.apache.pinot.spi.stream.StreamPartitionMsgOffset;
@@ -90,11 +91,11 @@ public class MissingConsumingSegmentFinderTest {
     idealStateMap.put("tableA__3__1__20220601T1200Z", Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
     idealStateMap.put("tableA__3__2__20220601T1500Z", Map.of("ServerX", "CONSUMING", "ServerY", "CONSUMING"));
 
-    Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = Map.of(
-        0, new LongMsgOffset(1000),
-        1, new LongMsgOffset(1001),
-        2, new LongMsgOffset(1002),
-        3, new LongMsgOffset(1003)
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = Map.of(
+        new TopicPartitionId(0, 0), new LongMsgOffset(1000),
+        new TopicPartitionId(0, 1), new LongMsgOffset(1001),
+        new TopicPartitionId(0, 2), new LongMsgOffset(1002),
+        new TopicPartitionId(0, 3), new LongMsgOffset(1003)
     );
 
     Instant now = Instant.parse("2022-06-01T18:00:00.00Z");
@@ -127,11 +128,11 @@ public class MissingConsumingSegmentFinderTest {
     idealStateMap.put("tableA__3__0__20220601T0900Z", Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
     idealStateMap.put("tableA__3__1__20220601T1200Z", Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
 
-    Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = Map.of(
-        0, new LongMsgOffset(1000),
-        1, new LongMsgOffset(701),
-        2, new LongMsgOffset(1002),
-        3, new LongMsgOffset(703)
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = Map.of(
+        new TopicPartitionId(0, 0), new LongMsgOffset(1000),
+        new TopicPartitionId(0, 1), new LongMsgOffset(701),
+        new TopicPartitionId(0, 2), new LongMsgOffset(1002),
+        new TopicPartitionId(0, 3), new LongMsgOffset(703)
     );
 
     // setup segment metadata fetcher
@@ -228,14 +229,14 @@ public class MissingConsumingSegmentFinderTest {
     idealStateMap.put("tableA__5__2__20220601T1500Z", Map.of("ServerX", "CONSUMING", "ServerY", "CONSUMING"));
     // partition 6 is a new partition and there's no consuming segment in ideal states for it
 
-    Map<Integer, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = new HashMap<>();
-    partitionGroupIdToLargestStreamOffsetMap.put(0, new LongMsgOffset(1000));
-    partitionGroupIdToLargestStreamOffsetMap.put(1, new LongMsgOffset(1001));
-    partitionGroupIdToLargestStreamOffsetMap.put(2, new LongMsgOffset(1002));
-    partitionGroupIdToLargestStreamOffsetMap.put(3, new LongMsgOffset(1003));
-    partitionGroupIdToLargestStreamOffsetMap.put(4, new LongMsgOffset(1004));
-    partitionGroupIdToLargestStreamOffsetMap.put(5, new LongMsgOffset(1005));
-    partitionGroupIdToLargestStreamOffsetMap.put(6, new LongMsgOffset(16));
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = new HashMap<>();
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 0), new LongMsgOffset(1000));
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 1), new LongMsgOffset(1001));
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 2), new LongMsgOffset(1002));
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 3), new LongMsgOffset(1003));
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 4), new LongMsgOffset(1004));
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 5), new LongMsgOffset(1005));
+    partitionGroupIdToLargestStreamOffsetMap.put(new TopicPartitionId(0, 6), new LongMsgOffset(16));
 
     // setup segment metadata fetcher
     SegmentZKMetadata m1 = mock(SegmentZKMetadata.class);
@@ -301,5 +302,77 @@ public class MissingConsumingSegmentFinderTest {
     assertEquals(info._totalCount, 2);
     assertEquals(info._newPartitionGroupCount, 0);
     assertEquals(info._maxDurationInMinutes, 6 * 60); // (18:00:00 - 12:00:00) in minutes
+  }
+
+  @Test
+  public void missingConsumingSegmentsMultiTopicSameRawPartitionIdAcrossTopics() {
+    // Two topics (topicId 0 and 1) both have a raw stream partition id of 0. Topic 0's partition is healthy (has a
+    // consuming segment); topic 1's partition is missing its consuming segment. Since
+    // partitionGroupIdToLatestConsumingSegmentMap/partitionGroupIdToLatestCompletedSegmentMap are keyed by
+    // TopicPartitionId rather than raw partition id, the two topics' same-raw-id partitions must not collide.
+    long creationTimeMs = Instant.parse("2022-06-01T09:00:00.00Z").toEpochMilli();
+
+    String topic0Online = new LLCSegmentName("tableA", 0, 0, 0, creationTimeMs).getSegmentName();
+    String topic0Consuming = new LLCSegmentName("tableA", 0, 0, 1, creationTimeMs).getSegmentName();
+    String topic1Online = new LLCSegmentName("tableA", 1, 0, 0, creationTimeMs).getSegmentName();
+
+    Map<String, Map<String, String>> idealStateMap = new HashMap<>();
+    idealStateMap.put(topic0Online, Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
+    idealStateMap.put(topic0Consuming, Map.of("ServerX", "CONSUMING", "ServerY", "CONSUMING"));
+    idealStateMap.put(topic1Online, Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
+    // topic 1 has no consuming segment for its raw partition id 0 -- this is the missing consuming segment case
+
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = Map.of(
+        new TopicPartitionId(0, 0), new LongMsgOffset(1000),
+        new TopicPartitionId(1, 0), new LongMsgOffset(1001)
+    );
+
+    SegmentZKMetadata topic1OnlineMetadata = mock(SegmentZKMetadata.class);
+    when(topic1OnlineMetadata.getEndOffset()).thenReturn("701");
+    when(topic1OnlineMetadata.getCreationTime()).thenReturn(Instant.parse("2022-06-01T12:00:00.00Z").toEpochMilli());
+    MissingConsumingSegmentFinder.SegmentMetadataFetcher metadataFetcher =
+        mock(MissingConsumingSegmentFinder.SegmentMetadataFetcher.class);
+    when(metadataFetcher.fetchSegmentZkMetadata("tableA", topic1Online)).thenReturn(topic1OnlineMetadata);
+
+    Instant now = Instant.parse("2022-06-01T18:00:00.00Z");
+    MissingConsumingSegmentFinder finder =
+        new MissingConsumingSegmentFinder("tableA", metadataFetcher, partitionGroupIdToLargestStreamOffsetMap,
+            _offsetFactory, true);
+    MissingConsumingSegmentFinder.MissingSegmentInfo info = finder.findMissingSegments(idealStateMap, now);
+    assertEquals(info._totalCount, 1, "Expected exactly one missing consuming segment, for topic 1's partition 0");
+    assertEquals(info._newPartitionGroupCount, 0);
+    assertEquals(info._maxDurationInMinutes, 6 * 60); // (18:00:00 - 12:00:00) in minutes
+  }
+
+  @Test
+  public void noMissingConsumingSegmentsMultiTopicSameRawPartitionIdAcrossTopics() {
+    // Two topics (topicId 0 and 1) both have a raw stream partition id of 0, and both are healthy (have a consuming
+    // segment). If the two topics' same-raw-id partitions were collapsed onto a single raw-partition-id key, one
+    // topic's consuming segment could mask the other's, but here neither is missing so the count must stay 0.
+    long creationTimeMs = Instant.parse("2022-06-01T09:00:00.00Z").toEpochMilli();
+
+    String topic0Online = new LLCSegmentName("tableA", 0, 0, 0, creationTimeMs).getSegmentName();
+    String topic0Consuming = new LLCSegmentName("tableA", 0, 0, 1, creationTimeMs).getSegmentName();
+    String topic1Online = new LLCSegmentName("tableA", 1, 0, 0, creationTimeMs).getSegmentName();
+    String topic1Consuming = new LLCSegmentName("tableA", 1, 0, 1, creationTimeMs).getSegmentName();
+
+    Map<String, Map<String, String>> idealStateMap = new HashMap<>();
+    idealStateMap.put(topic0Online, Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
+    idealStateMap.put(topic0Consuming, Map.of("ServerX", "CONSUMING", "ServerY", "CONSUMING"));
+    idealStateMap.put(topic1Online, Map.of("ServerX", "ONLINE", "ServerY", "ONLINE"));
+    idealStateMap.put(topic1Consuming, Map.of("ServerX", "CONSUMING", "ServerY", "CONSUMING"));
+
+    Map<TopicPartitionId, StreamPartitionMsgOffset> partitionGroupIdToLargestStreamOffsetMap = Map.of(
+        new TopicPartitionId(0, 0), new LongMsgOffset(1000),
+        new TopicPartitionId(1, 0), new LongMsgOffset(1001)
+    );
+
+    Instant now = Instant.parse("2022-06-01T18:00:00.00Z");
+    MissingConsumingSegmentFinder finder =
+        new MissingConsumingSegmentFinder("tableA", null, partitionGroupIdToLargestStreamOffsetMap, null, true);
+    MissingConsumingSegmentFinder.MissingSegmentInfo info = finder.findMissingSegments(idealStateMap, now);
+    assertEquals(info._totalCount, 0, "Neither topic's partition should be reported as missing");
+    assertEquals(info._newPartitionGroupCount, 0);
+    assertEquals(info._maxDurationInMinutes, 0);
   }
 }
