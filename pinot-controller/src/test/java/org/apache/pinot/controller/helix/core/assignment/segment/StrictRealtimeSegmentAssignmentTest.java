@@ -46,9 +46,12 @@ import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.config.table.UpsertConfig;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
 import org.apache.pinot.spi.config.table.assignment.SegmentAssignmentConfig;
+import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
+import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
 import org.apache.pinot.spi.utils.CommonConstants.Helix.StateModel.SegmentStateModel;
 import org.apache.pinot.spi.utils.CommonConstants.Segment;
 import org.apache.pinot.spi.utils.CommonConstants.Segment.AssignmentStrategy;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
@@ -161,6 +164,73 @@ public class StrictRealtimeSegmentAssignmentTest {
     } else {
       assertTrue(segmentAssignment instanceof MultiTierStrictRealtimeSegmentAssignment);
     }
+  }
+
+  @Test(dataProvider = "tableTypes")
+  public void testAssignSegmentMultiTopicLegacyFormatUsesUnpaddedPartitionId(String tableType) {
+    // For a multi-topic table, BaseStrictRealtimeSegmentAssignment.getPartitionId/getExistingAssignment must use the
+    // unpadded, per-stream partition id (via SegmentUtils.getStreamPartitionId) consistently for both the initial
+    // assignment and the idealState-consistency check, even when the existing segment is a legacy (4-part, padded)
+    // LLC segment name. Before the fix, getPartitionId returned the raw (still-padded) field while
+    // getExistingAssignment compared against the raw (non-format-aware) LLCSegmentName field directly - these would
+    // still have agreed with each other pre-fix (both used the padded value), so this test targets the more subtle
+    // regression: after fixing getPartitionId to unpad, getExistingAssignment's comparison must also unpad,
+    // otherwise a legacy segment already assigned would appear "new" every time and always follow the
+    // instancePartitions-derived assignment instead of the sticky idealState assignment.
+    Map<String, String> streamConfigMap = FakeStreamConfigUtils.getDefaultLowLevelStreamConfigs().getStreamConfigsMap();
+    IngestionConfig ingestionConfig = new IngestionConfig();
+    ingestionConfig.setStreamIngestionConfig(new StreamIngestionConfig(List.of(streamConfigMap, streamConfigMap)));
+    TableConfigBuilder builder = new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME)
+        .setNumReplicas(NUM_REPLICAS)
+        .setIngestionConfig(ingestionConfig)
+        .setSegmentAssignmentConfigMap(Map.of(InstancePartitionsType.COMPLETED.toString(),
+            new SegmentAssignmentConfig(AssignmentStrategy.REPLICA_GROUP_SEGMENT_ASSIGNMENT_STRATEGY)))
+        .setReplicaGroupStrategyConfig(new ReplicaGroupStrategyConfig(PARTITION_COLUMN, 1));
+    TableConfig multiTopicTableConfig = "upsert".equalsIgnoreCase(tableType)
+        ? builder.setUpsertConfig(new UpsertConfig(UpsertConfig.Mode.FULL)).build()
+        : builder.setDedupConfig(new DedupConfig()).build();
+    SegmentAssignment segmentAssignment =
+        SegmentAssignmentFactory.getSegmentAssignment(createHelixManager(), multiTopicTableConfig, null);
+    assertSegmentAssignmentType(segmentAssignment, tableType);
+
+    Map<InstancePartitionsType, InstancePartitions> onlyConsumingInstancePartitionMap =
+        Map.of(InstancePartitionsType.CONSUMING, _instancePartitionsMap.get(InstancePartitionsType.CONSUMING));
+    int numInstancesPerReplicaGroup = NUM_CONSUMING_INSTANCES / NUM_REPLICAS;
+
+    int topicId = 1;
+    int streamPartitionId = 2;
+    int paddedPartitionId =
+        IngestionConfigUtils.getPinotPartitionIdFromStreamPartitionId(streamPartitionId, topicId);
+    String legacySegmentName =
+        new LLCSegmentName(RAW_TABLE_NAME, paddedPartitionId, 0, System.currentTimeMillis()).getSegmentName();
+    assertTrue(!new LLCSegmentName(legacySegmentName).isMultiTopicFormat());
+
+    Map<String, Map<String, String>> currentAssignment = new TreeMap<>();
+    List<String> firstAssignment =
+        segmentAssignment.assignSegment(legacySegmentName, currentAssignment, onlyConsumingInstancePartitionMap);
+    assertEquals(firstAssignment.size(), NUM_REPLICAS);
+    int expectedSlot = streamPartitionId % numInstancesPerReplicaGroup;
+    for (int replicaGroupId = 0; replicaGroupId < NUM_REPLICAS; replicaGroupId++) {
+      assertEquals(firstAssignment.get(replicaGroupId),
+          CONSUMING_INSTANCES.get(expectedSlot + replicaGroupId * numInstancesPerReplicaGroup));
+    }
+    addToAssignment(currentAssignment, legacySegmentName, firstAssignment);
+
+    // Re-assigning with a different (new) instancePartitions must still honor the existing idealState assignment for
+    // this same partition, which requires getExistingAssignment to correctly match this legacy segment's unpadded
+    // partition id against the newly-computed unpadded partition id for a second assignment call.
+    Map<InstancePartitionsType, InstancePartitions> newConsumingInstancePartitionMap =
+        Map.of(InstancePartitionsType.CONSUMING, _newConsumingInstancePartitions);
+    List<String> secondAssignment =
+        segmentAssignment.assignSegment(legacySegmentName, currentAssignment, newConsumingInstancePartitionMap);
+    assertEquals(secondAssignment, firstAssignment,
+        "Existing idealState assignment must be honored for the same partition id");
+  }
+
+  private static void addToAssignment(Map<String, Map<String, String>> currentAssignment, String segmentName,
+      List<String> instancesAssigned) {
+    currentAssignment.put(segmentName,
+        SegmentAssignmentUtils.getInstanceStateMap(instancesAssigned, SegmentStateModel.CONSUMING));
   }
 
   @Test(dataProvider = "tableTypes")

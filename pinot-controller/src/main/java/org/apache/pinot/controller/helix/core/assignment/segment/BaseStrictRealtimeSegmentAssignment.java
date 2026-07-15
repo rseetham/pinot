@@ -31,6 +31,7 @@ import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.common.utils.SegmentUtils;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
 import org.apache.pinot.spi.utils.CommonConstants.Helix.StateModel.SegmentStateModel;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 
 
 /**
@@ -115,7 +116,8 @@ public abstract class BaseStrictRealtimeSegmentAssignment extends RealtimeSegmen
         uploadedSegments.add(entry.getKey());
         continue;
       }
-      if (llcSegmentName.getPartitionGroupId() == partitionId) {
+      if (llcSegmentName.getStreamPartitionGroupId(IngestionConfigUtils.hasMultipleStreams(_tableConfig))
+          == partitionId) {
         return entry.getValue().keySet();
       }
     }
@@ -140,8 +142,8 @@ public abstract class BaseStrictRealtimeSegmentAssignment extends RealtimeSegmen
    * Returns the partition id of the given segment.
    */
   private int getPartitionId(String segmentName) {
-    Integer partitionId =
-        SegmentUtils.getSegmentPartitionId(segmentName, _tableNameWithType, _helixManager, _partitionColumn);
+    Integer partitionId = SegmentUtils.getStreamPartitionId(segmentName, _tableNameWithType, _helixManager,
+        _partitionColumn, IngestionConfigUtils.hasMultipleStreams(_tableConfig));
     Preconditions.checkState(partitionId != null, "Failed to find partition id for segment: %s of table: %s",
         segmentName, _tableNameWithType);
     return partitionId;

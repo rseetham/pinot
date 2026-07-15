@@ -125,12 +125,8 @@ public class ReplicaGroupSegmentAssignmentStrategy implements SegmentAssignmentS
   }
 
   private int getPartitionIdFromSegmentName(String segmentName, int numPartitions) {
-    int rawPartitionId =
-        SegmentUtils.getSegmentPartitionIdOrDefault(segmentName, _tableName, _helixManager, _partitionColumn);
-    // For multi-stream realtime tables, translate the Pinot partition ID (which encodes stream index and stream
-    // partition as streamIndex * 10000 + streamPartitionId) to the stream partition id before computing the slot.
-    // getStreamPartitionIdFromPinotPartitionId is a no-op for offline tables and single-stream realtime tables.
-    rawPartitionId = IngestionConfigUtils.getStreamPartitionIdFromPinotPartitionId(_tableConfig, rawPartitionId);
+    int rawPartitionId = SegmentUtils.getStreamPartitionIdOrDefault(segmentName, _tableName, _helixManager,
+        _partitionColumn, IngestionConfigUtils.hasMultipleStreams(_tableConfig));
     return rawPartitionId % numPartitions;
   }
 

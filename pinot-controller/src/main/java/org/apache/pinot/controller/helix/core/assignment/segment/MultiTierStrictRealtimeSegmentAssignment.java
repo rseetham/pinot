@@ -34,6 +34,7 @@ import org.apache.pinot.common.tier.Tier;
 import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
 import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 
 
 /**
@@ -107,7 +108,8 @@ public class MultiTierStrictRealtimeSegmentAssignment extends BaseStrictRealtime
       if (llcSegmentName == null) {
         continue;
       }
-      if (llcSegmentName.getPartitionGroupId() == partitionId && (latestLLCSegmentName == null
+      if (llcSegmentName.getStreamPartitionGroupId(IngestionConfigUtils.hasMultipleStreams(_tableConfig))
+          == partitionId && (latestLLCSegmentName == null
           || llcSegmentName.getSequenceNumber() > latestLLCSegmentName.getSequenceNumber())) {
         latestLLCSegmentName = llcSegmentName;
         latestAssignment = entry.getValue().keySet();

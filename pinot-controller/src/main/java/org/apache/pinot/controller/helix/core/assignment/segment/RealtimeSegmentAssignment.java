@@ -110,17 +110,12 @@ public class RealtimeSegmentAssignment extends BaseSegmentAssignment {
    * Helper method to assign instances for CONSUMING segment based on the segment partition id and instance partitions.
    */
   private List<String> assignConsumingSegment(String segmentName, InstancePartitions instancePartitions) {
-    int segmentPartitionId =
-        SegmentUtils.getSegmentPartitionIdOrDefault(segmentName, _tableNameWithType, _helixManager, _partitionColumn);
+    int segmentPartitionId = SegmentUtils.getStreamPartitionIdOrDefault(segmentName, _tableNameWithType,
+        _helixManager, _partitionColumn, IngestionConfigUtils.hasMultipleStreams(_tableConfig));
     return assignConsumingSegment(segmentPartitionId, instancePartitions);
   }
 
   protected List<String> assignConsumingSegment(int segmentPartitionId, InstancePartitions instancePartitions) {
-    // For multi-stream tables, Pinot partition IDs are encoded as (streamIndex * 10000 + streamPartitionId).
-    // Extract the stream-level partition id before computing the instance index to avoid incorrect slot mapping.
-    segmentPartitionId =
-        IngestionConfigUtils.getStreamPartitionIdFromPinotPartitionId(_tableConfig, segmentPartitionId);
-
     int numReplicaGroups = instancePartitions.getNumReplicaGroups();
     int numPartitions = instancePartitions.getNumPartitions();
 

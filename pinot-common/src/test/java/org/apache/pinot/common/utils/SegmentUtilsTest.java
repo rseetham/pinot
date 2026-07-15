@@ -23,6 +23,7 @@ import java.util.Set;
 import org.apache.pinot.common.metadata.segment.SegmentPartitionMetadata;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.segment.spi.partition.metadata.ColumnPartitionMetadata;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.testng.annotations.Test;
 
 import static org.testng.Assert.assertEquals;
@@ -71,6 +72,37 @@ public class SegmentUtilsTest {
   void testGetPartitionIdFromSegmentName() {
     assertEquals(SegmentUtils.getPartitionIdFromSegmentName("table__3__100__1716185755000"), 3);
     assertEquals(SegmentUtils.getPartitionIdFromSegmentName("uploaded__table_name__3__100__1716185755000"), 3);
+  }
+
+  @Test
+  void testGetStreamPartitionIdFromSegmentNameSingleStream() {
+    // Single-stream table: raw field is returned unchanged regardless of hasMultipleStreams, for both legacy
+    // (4-part) and multi-topic-format (5-part) segment names.
+    String legacyName = "table__3__100__1716185755000";
+    assertEquals(SegmentUtils.getStreamPartitionIdOrDefault(legacyName, "table_REALTIME", null, null, false), 3);
+
+    String multiTopicFormatName = "table__1__3__100__1716185755000";
+    assertEquals(SegmentUtils.getStreamPartitionIdOrDefault(multiTopicFormatName, "table_REALTIME", null, null, false),
+        3);
+  }
+
+  @Test
+  void testGetStreamPartitionIdFromSegmentNameMultiStream() {
+    // Multi-topic table, legacy (4-part) segment name: the raw field is the padded composite id
+    // (streamIndex * 10000 + streamPartitionId), so it must be unpadded to get the stream-relative id.
+    int topicId = 1;
+    int streamPartitionId = 5;
+    int paddedPartitionId =
+        IngestionConfigUtils.getPinotPartitionIdFromStreamPartitionId(streamPartitionId, topicId);
+    String legacyName = "table__" + paddedPartitionId + "__100__1716185755000";
+    assertEquals(SegmentUtils.getStreamPartitionIdOrDefault(legacyName, "table_REALTIME", null, null, true),
+        streamPartitionId);
+
+    // Multi-topic table, multi-topic-format (5-part) segment name: the raw field is already the unpadded
+    // stream-relative id, so it must be returned unchanged.
+    String multiTopicFormatName = "table__" + topicId + "__" + streamPartitionId + "__100__1716185755000";
+    assertEquals(SegmentUtils.getStreamPartitionIdOrDefault(multiTopicFormatName, "table_REALTIME", null, null, true),
+        streamPartitionId);
   }
 
   @Test

@@ -26,6 +26,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.common.assignment.InstancePartitions;
 import org.apache.pinot.common.utils.SegmentUtils;
 import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentUtils;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 
 
 /**
@@ -64,7 +65,8 @@ public class RoundRobinReplicaGroupSegmentAssignmentStrategy extends ReplicaGrou
       partitionId = 0;
     } else {
       partitionId =
-          SegmentUtils.getSegmentPartitionIdOrDefault(segmentName, _tableName, _helixManager, _partitionColumn)
+          SegmentUtils.getStreamPartitionIdOrDefault(segmentName, _tableName, _helixManager, _partitionColumn,
+                  IngestionConfigUtils.hasMultipleStreams(_tableConfig))
               % numPartitions;
     }
     int numInstancesPerReplicaGroup = instancePartitions.getInstances(partitionId, 0).size();

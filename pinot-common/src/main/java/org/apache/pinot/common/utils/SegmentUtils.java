@@ -74,11 +74,43 @@ public class SegmentUtils {
     if (llcSegmentName != null) {
       return llcSegmentName.getPartitionGroupId();
     }
+    return getPartitionIdFromUploadedRealtimeSegmentName(segmentName);
+  }
+
+  @Nullable
+  private static Integer getPartitionIdFromUploadedRealtimeSegmentName(String segmentName) {
     UploadedRealtimeSegmentName uploadedRealtimeSegmentName = UploadedRealtimeSegmentName.of(segmentName);
-    if (uploadedRealtimeSegmentName != null) {
-      return uploadedRealtimeSegmentName.getPartitionId();
+    return uploadedRealtimeSegmentName != null ? uploadedRealtimeSegmentName.getPartitionId() : null;
+  }
+
+  /// Returns the stream-relative (unpadded) partition id of a segment based on segment name or ZK metadata,
+  /// correctly handling both legacy and multi-topic-format LLC segment names.
+  /// Can return `null` if the partition id cannot be determined.
+  /// Important: The method is costly because it may read data from zookeeper. Do not use it in query execution path.
+  @Nullable
+  public static Integer getStreamPartitionId(String segmentName, String tableNameWithType, HelixManager helixManager,
+      @Nullable String partitionColumn, boolean hasMultipleStreams) {
+    Integer partitionId = getStreamPartitionIdFromSegmentName(segmentName, hasMultipleStreams);
+    if (partitionId != null) {
+      return partitionId;
     }
-    return null;
+    // Otherwise, retrieve the partition id from the segment zk metadata.
+    SegmentZKMetadata segmentZKMetadata =
+        ZKMetadataProvider.getSegmentZKMetadata(helixManager.getHelixPropertyStore(), tableNameWithType, segmentName);
+    Preconditions.checkState(segmentZKMetadata != null,
+        "Failed to find segment ZK metadata for segment: %s of table: %s", segmentName, tableNameWithType);
+    return getPartitionIdFromSegmentZKMetadata(segmentZKMetadata, partitionColumn);
+  }
+
+  /// Returns the stream-relative (unpadded) partition id of a segment based on segment name.
+  /// Can return `null` if the partition id cannot be determined.
+  @Nullable
+  private static Integer getStreamPartitionIdFromSegmentName(String segmentName, boolean hasMultipleStreams) {
+    LLCSegmentName llcSegmentName = LLCSegmentName.of(segmentName);
+    if (llcSegmentName != null) {
+      return llcSegmentName.getStreamPartitionGroupId(hasMultipleStreams);
+    }
+    return getPartitionIdFromUploadedRealtimeSegmentName(segmentName);
   }
 
   /// Returns the partition id of a segment based on segment ZK metadata.
@@ -128,6 +160,16 @@ public class SegmentUtils {
       @Nullable String partitionColumn) {
     Integer partitionId = getSegmentPartitionId(segmentZKMetadata, partitionColumn);
     return partitionId != null ? partitionId : getDefaultPartitionId(segmentZKMetadata.getSegmentName());
+  }
+
+  /// Returns the stream-relative (unpadded) partition id of a segment based on segment name or ZK metadata, or a
+  /// default partition id based on the hash of the segment name.
+  /// Important: The method is costly because it may read data from zookeeper. Do not use it in query execution path.
+  public static int getStreamPartitionIdOrDefault(String segmentName, String tableNameWithType,
+      HelixManager helixManager, @Nullable String partitionColumn, boolean hasMultipleStreams) {
+    Integer partitionId =
+        getStreamPartitionId(segmentName, tableNameWithType, helixManager, partitionColumn, hasMultipleStreams);
+    return partitionId != null ? partitionId : getDefaultPartitionId(segmentName);
   }
 
   /// Returns a default partition id based on the hash of the segment name.

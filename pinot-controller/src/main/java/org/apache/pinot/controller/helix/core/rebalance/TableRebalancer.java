@@ -583,7 +583,7 @@ public class TableRebalancer {
     boolean isStrictRealtimeSegmentAssignment = (segmentAssignment instanceof BaseStrictRealtimeSegmentAssignment);
     PartitionIdFetcher partitionIdFetcher =
         new PartitionIdFetcherImpl(tableNameWithType, TableConfigUtils.getPartitionColumn(tableConfig), _helixManager,
-            isStrictRealtimeSegmentAssignment);
+            isStrictRealtimeSegmentAssignment, IngestionConfigUtils.hasMultipleStreams(tableConfig));
 
     // We repeat the following steps until the target assignment is reached:
     // 1. Wait for ExternalView to converge with the IdealState. Fail the rebalance if it doesn't make progress within
@@ -1903,19 +1903,21 @@ public class TableRebalancer {
     private final String _partitionColumn;
     private final HelixManager _helixManager;
     private final boolean _isStrictRealtimeSegmentAssignment;
+    private final boolean _hasMultipleStreams;
 
     private PartitionIdFetcherImpl(String tableNameWithType, @Nullable String partitionColumn,
-        HelixManager helixManager, boolean isStrictRealtimeSegmentAssignment) {
+        HelixManager helixManager, boolean isStrictRealtimeSegmentAssignment, boolean hasMultipleStreams) {
       _tableNameWithType = tableNameWithType;
       _partitionColumn = partitionColumn;
       _helixManager = helixManager;
       _isStrictRealtimeSegmentAssignment = isStrictRealtimeSegmentAssignment;
+      _hasMultipleStreams = hasMultipleStreams;
     }
 
     @Override
     public int fetch(String segmentName) {
-      Integer partitionId =
-          SegmentUtils.getSegmentPartitionId(segmentName, _tableNameWithType, _helixManager, _partitionColumn);
+      Integer partitionId = SegmentUtils.getStreamPartitionId(segmentName, _tableNameWithType, _helixManager,
+          _partitionColumn, _hasMultipleStreams);
       if (partitionId != null) {
         return partitionId;
       }

@@ -37,8 +37,11 @@ import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
 import org.apache.pinot.spi.config.table.assignment.SegmentAssignmentConfig;
+import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
+import org.apache.pinot.spi.config.table.ingestion.StreamIngestionConfig;
 import org.apache.pinot.spi.utils.CommonConstants.Helix.StateModel.SegmentStateModel;
 import org.apache.pinot.spi.utils.CommonConstants.Segment.AssignmentStrategy;
+import org.apache.pinot.spi.utils.IngestionConfigUtils;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -160,6 +163,45 @@ public class RealtimeReplicaGroupSegmentAssignmentTest {
       }
 
       addToAssignment(currentAssignment, segmentId, instancesAssigned);
+    }
+  }
+
+  @Test
+  public void testAssignConsumingSegmentMultiTopicUnpadsLegacyPartitionId() {
+    // For a multi-topic table, a legacy (4-part) LLC segment name encodes the padded composite partition id
+    // (streamIndex * 10000 + streamPartitionId). assignConsumingSegment's slot math needs the unpadded, per-stream
+    // partition id; prior to the fix, SegmentUtils returned the raw (still-padded) LLCSegmentName field directly, so
+    // the padded id was fed straight into the modulo slot computation instead of being unpadded first.
+    Map<String, String> streamConfigMap = FakeStreamConfigUtils.getDefaultLowLevelStreamConfigs().getStreamConfigsMap();
+    IngestionConfig ingestionConfig = new IngestionConfig();
+    ingestionConfig.setStreamIngestionConfig(
+        new StreamIngestionConfig(List.of(streamConfigMap, streamConfigMap)));
+    TableConfig multiTopicTableConfig =
+        new TableConfigBuilder(TableType.REALTIME).setTableName(RAW_TABLE_NAME).setNumReplicas(NUM_REPLICAS)
+            .setIngestionConfig(ingestionConfig)
+            .setReplicaGroupStrategyConfig(new ReplicaGroupStrategyConfig(PARTITION_COLUMN, 1)).build();
+    SegmentAssignment multiTopicSegmentAssignment =
+        SegmentAssignmentFactory.getSegmentAssignment(createHelixManager(), multiTopicTableConfig, null);
+
+    Map<InstancePartitionsType, InstancePartitions> onlyConsumingInstancePartitionMap =
+        Map.of(InstancePartitionsType.CONSUMING, _instancePartitionsMap.get(InstancePartitionsType.CONSUMING));
+    int numInstancesPerReplicaGroup = NUM_CONSUMING_INSTANCES / NUM_REPLICAS;
+
+    int topicId = 1;
+    int streamPartitionId = 2;
+    int paddedPartitionId = IngestionConfigUtils.getPinotPartitionIdFromStreamPartitionId(streamPartitionId, topicId);
+    // Legacy (4-part, non-multi-topic-format) segment name encoding the padded composite id.
+    String legacySegmentName =
+        new LLCSegmentName(RAW_TABLE_NAME, paddedPartitionId, 0, System.currentTimeMillis()).getSegmentName();
+    assertTrue(!new LLCSegmentName(legacySegmentName).isMultiTopicFormat());
+
+    List<String> instancesAssigned = multiTopicSegmentAssignment.assignSegment(legacySegmentName, new TreeMap<>(),
+        onlyConsumingInstancePartitionMap);
+    assertEquals(instancesAssigned.size(), NUM_REPLICAS);
+    int expectedSlot = streamPartitionId % numInstancesPerReplicaGroup;
+    for (int replicaGroupId = 0; replicaGroupId < NUM_REPLICAS; replicaGroupId++) {
+      assertEquals(instancesAssigned.get(replicaGroupId),
+          CONSUMING_INSTANCES.get(expectedSlot + replicaGroupId * numInstancesPerReplicaGroup));
     }
   }
 
